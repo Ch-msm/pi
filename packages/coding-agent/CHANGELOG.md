@@ -15,6 +15,9 @@
 - Fixed `models.json` schema support for OpenAI Responses `compat.supportsDeveloperRole` ([#5456](https://github.com/earendil-works/pi/issues/5456)).
 - Fixed tmux setup documentation to require tmux 3.5 for `extended-keys-format csi-u` and document the tmux 3.2-3.4 fallback ([#5432](https://github.com/earendil-works/pi/issues/5432)).
 - Fixed built-in tool expand hints to style closing parentheses consistently ([#5359](https://github.com/earendil-works/pi/issues/5359)).
+- Fixed the interactive Working indicator not being restored after in-turn auto-compaction.
+- Changed default tool output truncation to 500 lines or 10KB, and changed `read` to default to a 200-line window.
+- Added an in-turn auto-compaction guard before continuing long tool-driven agent runs.
 
 ## [0.78.1] - 2026-06-04
 

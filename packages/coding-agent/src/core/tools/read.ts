@@ -17,10 +17,14 @@ import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 
+const READ_DEFAULT_LINES = 200;
+
 const readSchema = Type.Object({
 	path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
 	offset: Type.Optional(Type.Number({ description: "Line number to start reading from (1-indexed)" })),
-	limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
+	limit: Type.Optional(
+		Type.Number({ description: "Maximum number of lines to read. Defaults to 200 lines for text files." }),
+	),
 });
 
 export type ReadToolInput = Static<typeof readSchema>;
@@ -65,10 +69,10 @@ export interface ReadToolOptions {
 type ReadRenderArgs = { path?: string; file_path?: string; offset?: number; limit?: number };
 
 function formatReadLineRange(args: ReadRenderArgs | undefined, theme: Theme): string {
-	if (args?.offset === undefined && args?.limit === undefined) return "";
-	const startLine = args.offset ?? 1;
-	const endLine = args.limit !== undefined ? startLine + args.limit - 1 : "";
-	return theme.fg("warning", `:${startLine}${endLine ? `-${endLine}` : ""}`);
+	const startLine = args?.offset ?? 1;
+	const requestedLimit = args?.limit ?? READ_DEFAULT_LINES;
+	const endLine = startLine + requestedLimit - 1;
+	return theme.fg("warning", `:${startLine}-${endLine}`);
 }
 
 function formatReadCall(args: ReadRenderArgs | undefined, theme: Theme, cwd: string): string {
@@ -209,7 +213,7 @@ export function createReadToolDefinition(
 	return {
 		name: "read",
 		label: "read",
-		description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
+		description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, defaults to reading ${READ_DEFAULT_LINES} lines from offset and output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
 		promptSnippet: "Read file contents",
 		promptGuidelines: ["Use read to examine files instead of cat or sed."],
 		parameters: readSchema,
@@ -285,16 +289,10 @@ export function createReadToolDefinition(
 								if (startLine >= allLines.length) {
 									throw new Error(`Offset ${offset} is beyond end of file (${allLines.length} lines total)`);
 								}
-								let selectedContent: string;
-								let userLimitedLines: number | undefined;
-								// If limit is specified by the user, honor it first. Otherwise truncateHead decides.
-								if (limit !== undefined) {
-									const endLine = Math.min(startLine + limit, allLines.length);
-									selectedContent = allLines.slice(startLine, endLine).join("\n");
-									userLimitedLines = endLine - startLine;
-								} else {
-									selectedContent = allLines.slice(startLine).join("\n");
-								}
+								const requestedLimit = limit ?? READ_DEFAULT_LINES;
+								const endLine = Math.min(startLine + requestedLimit, allLines.length);
+								const selectedContent = allLines.slice(startLine, endLine).join("\n");
+								const userLimitedLines = endLine - startLine;
 								// Apply truncation, respecting both line and byte limits.
 								const truncation = truncateHead(selectedContent);
 								let outputText: string;

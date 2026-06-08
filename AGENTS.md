@@ -34,6 +34,50 @@
 - For ad-hoc scripts, `write` them to a temp file (e.g. `/tmp`), run, edit if needed, remove when done. Don't embed multi-line scripts in `bash` commands.
 - Never commit unless the user asks.
 
+## Local Fork Build And Install
+
+Use these steps when maintaining this local fork and replacing the globally available `pi` command with the local source build.
+
+From the repository root:
+
+```bash
+cd /home/meism/coding/github/pi
+npm install --ignore-scripts
+npm run check
+npm run build
+npm install -g /home/meism/coding/github/pi/packages/coding-agent --ignore-scripts
+```
+
+After installation, verify that the global package is still linked to this fork and that the expected local patches are present:
+
+```bash
+which pi
+pi --version
+ls -ld /home/meism/.nvm/versions/node/v22.22.3/lib/node_modules/@earendil-works/pi-coding-agent
+rg -n --glob '!*.map' 'restoreWorkingLoaderIfStreaming|READ_DEFAULT_LINES|DEFAULT_MAX_LINES = 500|_installAgentCompactionHook' \
+  /home/meism/.nvm/versions/node/v22.22.3/lib/node_modules/@earendil-works/pi-coding-agent/dist
+```
+
+Expected package link:
+
+```text
+/home/meism/.nvm/versions/node/v22.22.3/lib/node_modules/@earendil-works/pi-coding-agent -> /home/meism/coding/github/pi/packages/coding-agent
+```
+
+For coding-agent-only source edits, after the workspace has already been built once, this shorter rebuild is usually enough:
+
+```bash
+cd /home/meism/coding/github/pi/packages/coding-agent
+npm run build
+npm install -g . --ignore-scripts
+```
+
+Do not run bare `pi update` while using the local fork; it can replace the global CLI with the published npm package. To update only a package extension, use a scoped command such as:
+
+```bash
+pi update --extension npm:pi-mcp-adapter
+```
+
 ## Dependency and Install Security
 
 - Treat npm dep and lockfile changes as reviewed code. Direct external deps stay pinned to exact versions.

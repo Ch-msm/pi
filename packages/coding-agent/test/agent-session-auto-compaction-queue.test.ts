@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@earendil-works/pi-agent-core";
-import { type AssistantMessage, getModel } from "@earendil-works/pi-ai";
+import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -10,6 +10,39 @@ import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
+
+class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
+	constructor() {
+		super(
+			(event) => event.type === "done" || event.type === "error",
+			(event) => {
+				if (event.type === "done") return event.message;
+				if (event.type === "error") return event.error;
+				throw new Error("Unexpected event type");
+			},
+		);
+	}
+}
+
+function createAssistantMessage(text: string, totalTokens = 0): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude-sonnet-4-5",
+		usage: {
+			input: totalTokens,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+}
 
 vi.mock("../src/core/compaction/index.js", () => ({
 	calculateContextTokens: (usage: {
@@ -109,8 +142,6 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(session.pendingMessageCount).toBe(0);
 		expect(session.agent.hasQueuedMessages()).toBe(true);
 
-		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
-
 		const runAutoCompaction = (
 			session as unknown as {
 				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<boolean>;
@@ -118,8 +149,59 @@ describe("AgentSession auto-compaction queue resume", () => {
 		)._runAutoCompaction.bind(session);
 
 		await expect(runAutoCompaction("threshold", false)).resolves.toBe(true);
+	});
 
-		expect(continueSpy).not.toHaveBeenCalled();
+	it("continues the active run after prepare-next-turn compaction", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const responses = [createAssistantMessage("first", 190_000), createAssistantMessage("second", 1000)];
+		const seenMessageCounts: number[] = [];
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: {
+				model,
+				systemPrompt: "Test",
+				tools: [],
+			},
+			streamFn: (_model, context) => {
+				seenMessageCounts.push(context.messages.length);
+				const response = responses.shift();
+				if (!response) {
+					throw new Error("Unexpected extra response");
+				}
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: { ...response, content: [] } });
+					stream.push({ type: "done", reason: "stop", message: response });
+				});
+				return stream;
+			},
+		});
+
+		session.dispose();
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager: SettingsManager.create(tempDir, tempDir),
+			cwd: tempDir,
+			modelRegistry: ModelRegistry.create(authStorage, tempDir),
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		const eventTypes: string[] = [];
+		session.subscribe((event) => {
+			eventTypes.push(event.type);
+		});
+		session.agent.followUp({ role: "user", content: [{ type: "text", text: "queued" }], timestamp: Date.now() });
+
+		await session.prompt("start");
+
+		expect(responses).toHaveLength(0);
+		expect(seenMessageCounts).toHaveLength(2);
+		expect(eventTypes).toContain("compaction_start");
+		expect(eventTypes).toContain("compaction_end");
+		expect(session.isStreaming).toBe(false);
 	});
 
 	it("should not compact repeatedly after overflow recovery already attempted", async () => {

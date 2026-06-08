@@ -18,6 +18,7 @@ import { basename, dirname } from "node:path";
 import type {
 	Agent,
 	AgentEvent,
+	AgentLoopTurnUpdate,
 	AgentMessage,
 	AgentState,
 	AgentTool,
@@ -342,6 +343,7 @@ export class AgentSession {
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 		this._installAgentToolHooks();
+		this._installAgentCompactionHook();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -448,6 +450,81 @@ export class AgentSession {
 				isError: hookResult.isError ?? isError,
 			};
 		};
+	}
+
+	private _installAgentCompactionHook(): void {
+		const previousPrepareNextTurn = this.agent.prepareNextTurn;
+		this.agent.prepareNextTurn = async (signal): Promise<AgentLoopTurnUpdate | undefined> => {
+			const previousUpdate = await previousPrepareNextTurn?.(signal);
+			if (signal?.aborted || previousUpdate?.context) {
+				return previousUpdate;
+			}
+
+			const compactionUpdate = await this._prepareCompactionForNextTurn(signal);
+			if (!compactionUpdate) {
+				return previousUpdate;
+			}
+
+			return {
+				...previousUpdate,
+				context: compactionUpdate.context,
+			};
+		};
+	}
+
+	private async _prepareCompactionForNextTurn(signal?: AbortSignal): Promise<AgentLoopTurnUpdate | undefined> {
+		const settings = this.settingsManager.getCompactionSettings();
+		if (!settings.enabled) {
+			return undefined;
+		}
+
+		const contextWindow = this.model?.contextWindow ?? 0;
+		if (contextWindow <= 0 || !this._shouldRunNextTurnCompaction()) {
+			return undefined;
+		}
+
+		const usage = this.getContextUsage();
+		if (!usage || usage.tokens === null || !shouldCompact(usage.tokens, contextWindow, settings)) {
+			return undefined;
+		}
+
+		const beforeCompactionId = getLatestCompactionEntry(this.sessionManager.getBranch())?.id;
+		await this._runAutoCompaction("threshold", false);
+		if (signal?.aborted) {
+			return undefined;
+		}
+
+		const afterCompactionId = getLatestCompactionEntry(this.sessionManager.getBranch())?.id;
+		if (afterCompactionId === beforeCompactionId) {
+			return undefined;
+		}
+
+		return {
+			context: {
+				systemPrompt: this.agent.state.systemPrompt,
+				messages: this.agent.state.messages.slice(),
+				tools: this.agent.state.tools.slice(),
+			},
+		};
+	}
+
+	private _shouldRunNextTurnCompaction(): boolean {
+		if (this.agent.hasQueuedMessages()) {
+			return true;
+		}
+
+		// agent-core invokes prepareNextTurn before it knows whether the loop will stop.
+		// Only compact here when the latest assistant turn produced tool calls.
+		for (let i = this.agent.state.messages.length - 1; i >= 0; i--) {
+			const message = this.agent.state.messages[i];
+			if (message.role === "assistant") {
+				return Array.isArray(message.content) && message.content.some((part) => part.type === "toolCall");
+			}
+			if (message.role === "user") {
+				return false;
+			}
+		}
+		return false;
 	}
 
 	// =========================================================================
@@ -948,7 +1025,7 @@ export class AgentSession {
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
 		if (!msg) {
-			return false;
+			return this.agent.hasQueuedMessages();
 		}
 
 		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {

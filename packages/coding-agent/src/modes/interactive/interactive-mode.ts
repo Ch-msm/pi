@@ -1748,6 +1748,18 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	private restoreWorkingLoaderIfStreaming(): void {
+		if (!this.session.isStreaming || !this.workingVisible || this.loadingAnimation) {
+			return;
+		}
+		this.statusContainer.clear();
+		this.loadingAnimation = this.createWorkingLoader();
+		this.statusContainer.addChild(this.loadingAnimation);
+		if (this.settingsManager.getShowTerminalProgress()) {
+			this.ui.terminal.setProgress(true);
+		}
+	}
+
 	private setWorkingIndicator(options?: LoaderIndicatorOptions): void {
 		this.workingIndicatorOptions = options;
 		this.loadingAnimation?.setIndicator(options);
@@ -2898,6 +2910,10 @@ export class InteractiveMode {
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(true);
 				}
+				if (this.loadingAnimation) {
+					this.loadingAnimation.stop();
+					this.loadingAnimation = undefined;
+				}
 				// Keep editor active; submissions are queued during compaction.
 				this.autoCompactionEscapeHandler = this.defaultEditor.onEscape;
 				this.defaultEditor.onEscape = () => {
@@ -2958,6 +2974,7 @@ export class InteractiveMode {
 						this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
 					}
 				}
+				this.restoreWorkingLoaderIfStreaming();
 				void this.flushCompactionQueue({ willRetry: event.willRetry });
 				this.ui.requestRender();
 				break;
@@ -3835,8 +3852,8 @@ export class InteractiveMode {
 		};
 
 		try {
-			if (options?.willRetry) {
-				// When retry is pending, queue messages for the retry turn
+			if (options?.willRetry || this.session.isStreaming) {
+				// When the agent is still running, queue messages for the next active turn.
 				for (const message of queuedMessages) {
 					if (this.isExtensionCommand(message.text)) {
 						await this.session.prompt(message.text);

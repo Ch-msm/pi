@@ -33,6 +33,12 @@ export class CustomEditor extends Editor {
 			return;
 		}
 
+		// Let active autocomplete accept the highlighted completion before app-level shortcuts.
+		if (this.isShowingAutocomplete() && this.keybindings.matches(data, "tui.input.tab")) {
+			super.handleInput(data);
+			return;
+		}
+
 		// Check for paste image keybinding
 		if (this.keybindings.matches(data, "app.clipboard.pasteImage")) {
 			this.onPasteImage?.();

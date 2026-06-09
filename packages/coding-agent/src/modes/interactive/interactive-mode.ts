@@ -260,6 +260,8 @@ export interface InteractiveModeOptions {
 	verbose?: boolean;
 }
 
+const STREAMING_MESSAGE_RENDER_THROTTLE_MS = 80;
+
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
 	private ui: TUI;
@@ -302,6 +304,7 @@ export class InteractiveMode {
 	// Streaming message tracking
 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
 	private streamingMessage: AssistantMessage | undefined = undefined;
+	private streamingRenderTimer: ReturnType<typeof setTimeout> | undefined = undefined;
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
@@ -2696,6 +2699,65 @@ export class InteractiveMode {
 		});
 	}
 
+	private clearStreamingRenderTimer(): void {
+		if (!this.streamingRenderTimer) return;
+		clearTimeout(this.streamingRenderTimer);
+		this.streamingRenderTimer = undefined;
+	}
+
+	private updatePendingToolCallsFromStreamingMessage(): void {
+		if (!this.streamingMessage) return;
+
+		for (const content of this.streamingMessage.content) {
+			if (content.type !== "toolCall") continue;
+			if (!this.pendingTools.has(content.id)) {
+				const component = new ToolExecutionComponent(
+					content.name,
+					content.id,
+					content.arguments,
+					{
+						showImages: this.settingsManager.getShowImages(),
+						imageWidthCells: this.settingsManager.getImageWidthCells(),
+					},
+					this.getRegisteredToolDefinition(content.name),
+					this.ui,
+					this.sessionManager.getCwd(),
+				);
+				component.setExpanded(this.toolOutputExpanded);
+				this.chatContainer.addChild(component);
+				this.pendingTools.set(content.id, component);
+			} else {
+				const component = this.pendingTools.get(content.id);
+				if (component) {
+					component.updateArgs(content.arguments);
+				}
+			}
+		}
+	}
+
+	private renderStreamingAssistantMessage(): void {
+		if (!this.streamingComponent || !this.streamingMessage) return;
+		this.streamingComponent.updateContent(this.streamingMessage);
+		this.updatePendingToolCallsFromStreamingMessage();
+		this.ui.requestRender();
+	}
+
+	private scheduleStreamingAssistantRender(message: AssistantMessage): void {
+		this.streamingMessage = message;
+		if (this.streamingRenderTimer) return;
+
+		this.streamingRenderTimer = setTimeout(() => {
+			this.streamingRenderTimer = undefined;
+			this.renderStreamingAssistantMessage();
+		}, STREAMING_MESSAGE_RENDER_THROTTLE_MS);
+	}
+
+	private flushStreamingAssistantRender(message?: AssistantMessage): void {
+		if (message) this.streamingMessage = message;
+		this.clearStreamingRenderTimer();
+		this.renderStreamingAssistantMessage();
+	}
+
 	private async handleEvent(event: AgentSessionEvent): Promise<void> {
 		if (!this.isInitialized) {
 			await this.init();
@@ -2706,6 +2768,7 @@ export class InteractiveMode {
 		switch (event.type) {
 			case "agent_start":
 				this.pendingTools.clear();
+				this.clearStreamingRenderTimer();
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(true);
 				}
@@ -2764,43 +2827,13 @@ export class InteractiveMode {
 					);
 					this.streamingMessage = event.message;
 					this.chatContainer.addChild(this.streamingComponent);
-					this.streamingComponent.updateContent(this.streamingMessage);
-					this.ui.requestRender();
+					this.flushStreamingAssistantRender();
 				}
 				break;
 
 			case "message_update":
 				if (this.streamingComponent && event.message.role === "assistant") {
-					this.streamingMessage = event.message;
-					this.streamingComponent.updateContent(this.streamingMessage);
-
-					for (const content of this.streamingMessage.content) {
-						if (content.type === "toolCall") {
-							if (!this.pendingTools.has(content.id)) {
-								const component = new ToolExecutionComponent(
-									content.name,
-									content.id,
-									content.arguments,
-									{
-										showImages: this.settingsManager.getShowImages(),
-										imageWidthCells: this.settingsManager.getImageWidthCells(),
-									},
-									this.getRegisteredToolDefinition(content.name),
-									this.ui,
-									this.sessionManager.getCwd(),
-								);
-								component.setExpanded(this.toolOutputExpanded);
-								this.chatContainer.addChild(component);
-								this.pendingTools.set(content.id, component);
-							} else {
-								const component = this.pendingTools.get(content.id);
-								if (component) {
-									component.updateArgs(content.arguments);
-								}
-							}
-						}
-					}
-					this.ui.requestRender();
+					this.scheduleStreamingAssistantRender(event.message);
 				}
 				break;
 
@@ -2817,7 +2850,7 @@ export class InteractiveMode {
 								: "Operation aborted";
 						this.streamingMessage.errorMessage = errorMessage;
 					}
-					this.streamingComponent.updateContent(this.streamingMessage);
+					this.flushStreamingAssistantRender(this.streamingMessage);
 
 					if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
 						if (!errorMessage) {
@@ -2887,6 +2920,7 @@ export class InteractiveMode {
 			}
 
 			case "agent_end":
+				this.clearStreamingRenderTimer();
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(false);
 				}

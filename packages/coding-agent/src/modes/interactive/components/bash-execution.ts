@@ -17,6 +17,16 @@ import { truncateToVisualLines } from "./visual-truncate.ts";
 
 // Preview line limit when not expanded (matches tool execution behavior)
 const PREVIEW_LINES = 20;
+const MAX_BUFFERED_LINES = DEFAULT_MAX_LINES * 2;
+const MAX_BUFFERED_BYTES = DEFAULT_MAX_BYTES * 2;
+
+function truncateStringToBytesFromEnd(value: string, maxBytes: number): string {
+	const buffer = Buffer.from(value, "utf-8");
+	if (buffer.length <= maxBytes) return value;
+	let start = buffer.length - maxBytes;
+	while (start < buffer.length && (buffer[start] & 0xc0) === 0x80) start++;
+	return buffer.subarray(start).toString("utf-8");
+}
 
 export class BashExecutionComponent extends Container {
 	private command: string;
@@ -26,6 +36,7 @@ export class BashExecutionComponent extends Container {
 	private loader: Loader;
 	private truncationResult?: TruncationResult;
 	private fullOutputPath?: string;
+	private outputBufferTrimmed = false;
 	private expanded = false;
 	private contentContainer: Container;
 
@@ -91,6 +102,7 @@ export class BashExecutionComponent extends Container {
 		} else {
 			this.outputLines.push(...newLines);
 		}
+		this.trimOutputBuffer();
 
 		this.updateDisplay();
 	}
@@ -196,6 +208,8 @@ export class BashExecutionComponent extends Container {
 			const wasTruncated = this.truncationResult?.truncated || contextTruncation.truncated;
 			if (wasTruncated && this.fullOutputPath) {
 				statusParts.push(theme.fg("warning", `Output truncated. Full output: ${this.fullOutputPath}`));
+			} else if (this.outputBufferTrimmed) {
+				statusParts.push(theme.fg("warning", "Output preview trimmed to the latest output"));
 			}
 
 			if (statusParts.length > 0) {
@@ -204,9 +218,36 @@ export class BashExecutionComponent extends Container {
 		}
 	}
 
-	/**
-	 * Get the raw output for creating BashExecutionMessage.
-	 */
+	private trimOutputBuffer(): void {
+		if (this.outputLines.length > MAX_BUFFERED_LINES) {
+			this.outputLines = this.outputLines.slice(-MAX_BUFFERED_LINES);
+			this.outputBufferTrimmed = true;
+		}
+
+		let bytes = 0;
+		let start = this.outputLines.length;
+		for (let i = this.outputLines.length - 1; i >= 0; i--) {
+			const lineBytes =
+				Buffer.byteLength(this.outputLines[i] ?? "", "utf-8") + (start < this.outputLines.length ? 1 : 0);
+			if (bytes + lineBytes > MAX_BUFFERED_BYTES) {
+				if (start === this.outputLines.length) {
+					this.outputLines = [truncateStringToBytesFromEnd(this.outputLines[i] ?? "", MAX_BUFFERED_BYTES)];
+					this.outputBufferTrimmed = true;
+					return;
+				}
+				break;
+			}
+			bytes += lineBytes;
+			start = i;
+		}
+
+		if (start > 0) {
+			this.outputLines = this.outputLines.slice(start);
+			this.outputBufferTrimmed = true;
+		}
+	}
+
+	/** Get the retained output preview. Long-running commands may trim older lines. */
 	getOutput(): string {
 		return this.outputLines.join("\n");
 	}

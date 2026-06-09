@@ -176,6 +176,13 @@ function formatDuration(ms: number): string {
 	return `${(ms / 1000).toFixed(1)}s`;
 }
 
+function styleBashOutput(output: string): string {
+	return output
+		.split("\n")
+		.map((line) => theme.fg("toolOutput", line))
+		.join("\n");
+}
+
 function formatBashCall(args: { command?: string; timeout?: number } | undefined): string {
 	const command = str(args?.command);
 	const timeout = args?.timeout as number | undefined;
@@ -209,14 +216,11 @@ function rebuildBashResultRenderComponent(
 	}
 
 	if (output) {
-		const styledOutput = output
-			.split("\n")
-			.map((line) => theme.fg("toolOutput", line))
-			.join("\n");
-
 		if (options.expanded) {
+			const styledOutput = styleBashOutput(output);
 			component.addChild(new Text(`\n${styledOutput}`, 0, 0));
 		} else {
+			const styledOutput = styleBashOutput(output);
 			component.addChild({
 				render: (width: number) => {
 					if (state.cachedLines === undefined || state.cachedWidth !== width) {

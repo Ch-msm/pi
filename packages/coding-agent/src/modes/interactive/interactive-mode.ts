@@ -58,6 +58,7 @@ import {
 	getDocsPath,
 	getShareViewerUrl,
 	VERSION,
+	VERSION_CHECK_ENABLED,
 } from "../../config.ts";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
@@ -743,7 +744,7 @@ export class InteractiveMode {
 		await this.init();
 
 		// Start version check asynchronously
-		checkForNewPiVersion(this.version).then((newRelease) => {
+		checkForNewPiVersion(this.version, { enabled: VERSION_CHECK_ENABLED }).then((newRelease) => {
 			if (newRelease) {
 				this.showNewVersionNotification(newRelease);
 			}

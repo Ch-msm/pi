@@ -87,4 +87,13 @@ describe("version checks", () => {
 		await expect(getLatestPiVersion("1.2.3")).resolves.toBeUndefined();
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
+
+	it("skips api calls when a distribution disables version checks", async () => {
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(getLatestPiVersion("1.2.3", { enabled: false })).resolves.toBeUndefined();
+		await expect(checkForNewPiVersion("1.2.3", { enabled: false })).resolves.toBeUndefined();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
 });

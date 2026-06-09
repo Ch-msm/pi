@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- Fixed invalid `models.json` syntax to skip startup config migrations and report the normal file-path-aware models error instead of a raw JSON parse stack trace ([#5418](https://github.com/earendil-works/pi/issues/5418)).
+
 - Fixed the compaction summarization system prompt to use neutral AI assistant wording for non-coding agents ([#5401](https://github.com/earendil-works/pi/issues/5401)).
 - Fixed `models.json` schema support for OpenAI Responses `compat.supportsDeveloperRole` ([#5456](https://github.com/earendil-works/pi/issues/5456)).
 - Fixed tmux setup documentation to require tmux 3.5 for `extended-keys-format csi-u` and document the tmux 3.2-3.4 fallback ([#5432](https://github.com/earendil-works/pi/issues/5432)).

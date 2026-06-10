@@ -47,6 +47,13 @@ export interface EditorComponent extends Component {
 	insertTextAtCursor?(text: string): void;
 
 	/**
+	 * Insert an image marker at the current cursor position.
+	 * Displays as `[img #N]` but stores the file path internally.
+	 * The marker is atomic (cursor can't go inside it, backspace deletes it whole).
+	 */
+	insertImageMarker?(filePath: string): void;
+
+	/**
 	 * Get text with any markers expanded (e.g., paste markers).
 	 * Falls back to getText() if not implemented.
 	 */

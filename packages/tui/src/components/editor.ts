@@ -17,38 +17,72 @@ const PASTE_MARKER_REGEX = /\[paste #(\d+)( (\+\d+ lines|\d+ chars))?\]/g;
 /** Non-global version for single-segment testing. */
 const PASTE_MARKER_SINGLE = /^\[paste #(\d+)( (\+\d+ lines|\d+ chars))?\]$/;
 
+/** Regex matching image markers like `[img #1]`. */
+const IMAGE_MARKER_REGEX = /\[img #(\d+)\]/g;
+
+/** Non-global version for single-segment testing. */
+const IMAGE_MARKER_SINGLE = /^\[img #(\d+)\]$/;
+
 /** Check if a segment is a paste marker (i.e. was merged by segmentWithMarkers). */
 function isPasteMarker(segment: string): boolean {
 	return segment.length >= 10 && PASTE_MARKER_SINGLE.test(segment);
 }
 
+/** Check if a segment is an image marker. */
+function isImageMarker(segment: string): boolean {
+	return segment.length >= 7 && IMAGE_MARKER_SINGLE.test(segment);
+}
+
+/** Check if a segment is any atomic marker (paste or image). */
+function isAtomicMarker(segment: string): boolean {
+	return isPasteMarker(segment) || isImageMarker(segment);
+}
+
+const CYAN = "\x1b[36m";
+const RESET = "\x1b[0m";
+
 /**
  * A segmenter that wraps Intl.Segmenter and merges graphemes that fall
- * within paste markers into single atomic segments.  This makes cursor
- * movement, deletion, word-wrap, etc. treat paste markers as single units.
+ * within paste markers and image markers into single atomic segments.  This makes cursor
+ * movement, deletion, word-wrap, etc. treat paste/image markers as single units.
  *
- * Only markers whose numeric ID exists in `validIds` are merged.
+ * Only markers whose numeric ID exists in the respective validId set are merged.
  */
 function segmentWithMarkers(
 	text: string,
 	baseSegmenter: Intl.Segmenter,
-	validIds: Set<number>,
+	validPasteIds: Set<number>,
+	validImageIds: Set<number>,
 ): Iterable<Intl.SegmentData> {
-	// Fast path: no paste markers in the text or no valid IDs.
-	if (validIds.size === 0 || !text.includes("[paste #")) {
+	// Fast path: no markers in the text.
+	const hasPasteMarkers = validPasteIds.size > 0 && text.includes("[paste #");
+	const hasImageMarkers = validImageIds.size > 0 && text.includes("[img #");
+	if (!hasPasteMarkers && !hasImageMarkers) {
 		return baseSegmenter.segment(text);
 	}
 
 	// Find all marker spans with valid IDs.
 	const markers: Array<{ start: number; end: number }> = [];
-	for (const m of text.matchAll(PASTE_MARKER_REGEX)) {
-		const id = Number.parseInt(m[1]!, 10);
-		if (!validIds.has(id)) continue;
-		markers.push({ start: m.index, end: m.index + m[0].length });
+	if (hasPasteMarkers) {
+		for (const m of text.matchAll(PASTE_MARKER_REGEX)) {
+			const id = Number.parseInt(m[1]!, 10);
+			if (!validPasteIds.has(id)) continue;
+			markers.push({ start: m.index, end: m.index + m[0].length });
+		}
+	}
+	if (hasImageMarkers) {
+		for (const m of text.matchAll(IMAGE_MARKER_REGEX)) {
+			const id = Number.parseInt(m[1]!, 10);
+			if (!validImageIds.has(id)) continue;
+			markers.push({ start: m.index, end: m.index + m[0].length });
+		}
 	}
 	if (markers.length === 0) {
 		return baseSegmenter.segment(text);
 	}
+
+	// Sort markers by start position
+	markers.sort((a, b) => a.start - b.start);
 
 	// Build merged segment list.
 	const baseSegments = baseSegmenter.segment(text);
@@ -130,7 +164,7 @@ export function wordWrapLine(line: string, maxWidth: number, preSegmented?: Intl
 		const grapheme = seg.segment;
 		const gWidth = visibleWidth(grapheme);
 		const charIndex = seg.index;
-		const isWs = !isPasteMarker(grapheme) && isWhitespaceChar(grapheme);
+		const isWs = !isAtomicMarker(grapheme) && isWhitespaceChar(grapheme);
 
 		// Overflow check before advancing.
 		if (currentWidth + gWidth > maxWidth) {
@@ -178,7 +212,7 @@ export function wordWrapLine(line: string, maxWidth: number, preSegmented?: Intl
 		// Multiple spaces join (no break between them); the break point is
 		// after the last space before the next word.
 		const next = segments[i + 1];
-		if (isWs && next && (isPasteMarker(next.segment) || !isWhitespaceChar(next.segment))) {
+		if (isWs && next && (isAtomicMarker(next.segment) || !isWhitespaceChar(next.segment))) {
 			wrapOppIndex = next.index;
 			wrapOppWidth = currentWidth;
 		}
@@ -195,6 +229,8 @@ interface EditorState {
 	lines: string[];
 	cursorLine: number;
 	cursorCol: number;
+	images: Map<number, string>;
+	imageCounter: number;
 }
 
 interface LayoutLine {
@@ -225,6 +261,8 @@ export class Editor implements Component, Focusable {
 		lines: [""],
 		cursorLine: 0,
 		cursorCol: 0,
+		images: new Map(),
+		imageCounter: 0,
 	};
 
 	/** Focusable interface - set by TUI when focus changes */
@@ -255,7 +293,7 @@ export class Editor implements Component, Focusable {
 	private autocompleteStartToken: number = 0;
 	private autocompleteRequestId: number = 0;
 
-	// Paste tracking for large pastes
+	/** Paste tracking for large pastes */
 	private pastes: Map<number, string> = new Map();
 	private pasteCounter: number = 0;
 
@@ -306,9 +344,19 @@ export class Editor implements Component, Focusable {
 		return new Set(this.pastes.keys());
 	}
 
-	/** Segment text with paste-marker awareness, only merging markers with valid IDs. */
+	/** Set of currently valid image IDs, for marker-aware segmentation. */
+	private validImageIds(): Set<number> {
+		return new Set(this.state.images.keys());
+	}
+
+	/** Segment text with paste/image-marker awareness, only merging markers with valid IDs. */
 	private segment(text: string, mode: "word" | "grapheme"): Iterable<Intl.SegmentData> {
-		return segmentWithMarkers(text, mode === "word" ? wordSegmenter : graphemeSegmenter, this.validPasteIds());
+		return segmentWithMarkers(
+			text,
+			mode === "word" ? wordSegmenter : graphemeSegmenter,
+			this.validPasteIds(),
+			this.validImageIds(),
+		);
 	}
 
 	getPaddingX(): number {
@@ -400,9 +448,37 @@ export class Editor implements Component, Focusable {
 		this.state.lines = lines.length === 0 ? [""] : lines;
 		this.state.cursorLine = cursorPlacement === "start" ? 0 : this.state.lines.length - 1;
 		this.setCursorCol(cursorPlacement === "start" ? 0 : this.state.lines[this.state.cursorLine]?.length || 0);
+		this.clearImageMarkers();
 		// Reset scroll - render() will adjust to show cursor
 		this.scrollOffset = 0;
 
+		this.emitChange();
+	}
+
+	private clearImageMarkers(): void {
+		this.state.images = new Map();
+	}
+
+	private pruneUnusedImageMarkers(): void {
+		if (this.state.images.size === 0) return;
+
+		const usedIds = new Set<number>();
+		for (const match of this.state.lines.join("\n").matchAll(IMAGE_MARKER_REGEX)) {
+			const id = Number.parseInt(match[1]!, 10);
+			if (this.state.images.has(id)) {
+				usedIds.add(id);
+			}
+		}
+
+		for (const imageId of this.state.images.keys()) {
+			if (!usedIds.has(imageId)) {
+				this.state.images.delete(imageId);
+			}
+		}
+	}
+
+	private emitChange(): void {
+		this.pruneUnusedImageMarkers();
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
@@ -505,6 +581,9 @@ export class Editor implements Component, Focusable {
 					}
 				}
 			}
+
+			// Apply cyan color to image markers
+			displayText = displayText.replace(IMAGE_MARKER_REGEX, `${CYAN}$&${RESET}`);
 
 			// Calculate padding based on actual visible width
 			const padding = " ".repeat(Math.max(0, contentWidth - lineVisibleWidth));
@@ -626,7 +705,7 @@ export class Editor implements Component, Focusable {
 					this.state.cursorLine = result.cursorLine;
 					this.setCursorCol(result.cursorCol);
 					this.cancelAutocomplete();
-					if (this.onChange) this.onChange(this.getText());
+					this.emitChange();
 				}
 				return;
 			}
@@ -652,7 +731,7 @@ export class Editor implements Component, Focusable {
 						// Fall through to submit
 					} else {
 						this.cancelAutocomplete();
-						if (this.onChange) this.onChange(this.getText());
+						this.emitChange();
 						return;
 					}
 				}
@@ -927,12 +1006,21 @@ export class Editor implements Component, Focusable {
 		return result;
 	}
 
+	private expandImageMarkers(text: string): string {
+		let result = text;
+		for (const [imageId, filePath] of this.state.images) {
+			const markerRegex = new RegExp(`\\[img #${imageId}\\]`, "g");
+			result = result.replace(markerRegex, () => filePath);
+		}
+		return result;
+	}
+
 	/**
-	 * Get text with paste markers expanded to their actual content.
+	 * Get text with all markers (paste + image) expanded to their actual content.
 	 * Use this when you need the full content (e.g., for external editor).
 	 */
 	getExpandedText(): string {
-		return this.expandPasteMarkers(this.state.lines.join("\n"));
+		return this.expandImageMarkers(this.expandPasteMarkers(this.state.lines.join("\n")));
 	}
 
 	getLines(): string[] {
@@ -967,6 +1055,26 @@ export class Editor implements Component, Focusable {
 		this.lastAction = null;
 		this.historyIndex = -1;
 		this.insertTextAtCursorInternal(text);
+	}
+
+	/**
+	 * Insert an image marker at the current cursor position.
+	 * Stores the file path internally and inserts a short `[img #N]` marker in the text.
+	 * The marker is treated as an atomic unit for cursor movement and deletion.
+	 */
+	insertImageMarker(filePath: string): void {
+		if (!filePath) return;
+		this.cancelAutocomplete();
+		this.pushUndoSnapshot();
+		this.lastAction = null;
+		this.historyIndex = -1;
+
+		this.state.imageCounter++;
+		const imageId = this.state.imageCounter;
+		this.state.images.set(imageId, filePath);
+
+		const marker = `[img #${imageId}]`;
+		this.insertTextAtCursorInternal(marker);
 	}
 
 	/**
@@ -1021,9 +1129,7 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol((insertedLines[insertedLines.length - 1] || "").length);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	// All the editor methods from before...
@@ -1050,9 +1156,7 @@ export class Editor implements Component, Focusable {
 		this.state.lines[this.state.cursorLine] = before + char + after;
 		this.setCursorCol(this.state.cursorCol + char.length);
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 
 		// Check if we should trigger or update autocomplete
 		if (!this.autocompleteState) {
@@ -1175,9 +1279,7 @@ export class Editor implements Component, Focusable {
 		this.state.cursorLine++;
 		this.setCursorCol(0);
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	private shouldSubmitOnBackslashEnter(data: string, kb: ReturnType<typeof getKeybindings>): boolean {
@@ -1193,9 +1295,15 @@ export class Editor implements Component, Focusable {
 
 	private submitValue(): void {
 		this.cancelAutocomplete();
-		const result = this.expandPasteMarkers(this.state.lines.join("\n")).trim();
+		const result = this.expandImageMarkers(this.expandPasteMarkers(this.state.lines.join("\n"))).trim();
 
-		this.state = { lines: [""], cursorLine: 0, cursorCol: 0 };
+		this.state = {
+			lines: [""],
+			cursorLine: 0,
+			cursorCol: 0,
+			images: new Map(),
+			imageCounter: this.state.imageCounter,
+		};
 		this.pastes.clear();
 		this.pasteCounter = 0;
 		this.historyIndex = -1;
@@ -1203,7 +1311,7 @@ export class Editor implements Component, Focusable {
 		this.undoStack.clear();
 		this.lastAction = null;
 
-		if (this.onChange) this.onChange("");
+		this.emitChange();
 		if (this.onSubmit) this.onSubmit(result);
 	}
 
@@ -1242,9 +1350,7 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol(previousLine.length);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 
 		// Update or re-trigger autocomplete after backspace
 		if (this.autocompleteState) {
@@ -1454,9 +1560,7 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol(previousLine.length);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	private deleteToEndOfLine(): void {
@@ -1486,9 +1590,7 @@ export class Editor implements Component, Focusable {
 			this.state.lines.splice(this.state.cursorLine + 1, 1);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	private deleteWordBackwards(): void {
@@ -1531,9 +1633,7 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol(deleteFrom);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	private deleteWordForward(): void {
@@ -1573,9 +1673,7 @@ export class Editor implements Component, Focusable {
 				currentLine.slice(0, this.state.cursorCol) + currentLine.slice(deleteTo);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	private handleForwardDelete(): void {
@@ -1607,9 +1705,7 @@ export class Editor implements Component, Focusable {
 			this.state.lines.splice(this.state.cursorLine + 1, 1);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 
 		// Update or re-trigger autocomplete after forward delete
 		if (this.autocompleteState) {
@@ -1777,7 +1873,7 @@ export class Editor implements Component, Focusable {
 		this.setCursorCol(
 			findWordBackward(currentLine, this.state.cursorCol, {
 				segment: (text) => this.segment(text, "word"),
-				isAtomicSegment: isPasteMarker,
+				isAtomicSegment: isAtomicMarker,
 			}),
 		);
 	}
@@ -1856,9 +1952,7 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol((lines[lines.length - 1] || "").length);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	/**
@@ -1898,9 +1992,7 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol(startCol);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	private pushUndoSnapshot(): void {
@@ -1914,9 +2006,7 @@ export class Editor implements Component, Focusable {
 		Object.assign(this.state, snapshot);
 		this.lastAction = null;
 		this.preferredVisualCol = null;
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	/**
@@ -1969,7 +2059,7 @@ export class Editor implements Component, Focusable {
 		this.setCursorCol(
 			findWordForward(currentLine, this.state.cursorCol, {
 				segment: (text) => this.segment(text, "word"),
-				isAtomicSegment: isPasteMarker,
+				isAtomicSegment: isAtomicMarker,
 			}),
 		);
 	}
@@ -2162,7 +2252,7 @@ export class Editor implements Component, Focusable {
 			this.state.lines = result.lines;
 			this.state.cursorLine = result.cursorLine;
 			this.setCursorCol(result.cursorCol);
-			if (this.onChange) this.onChange(this.getText());
+			this.emitChange();
 			this.tui.requestRender();
 			return;
 		}

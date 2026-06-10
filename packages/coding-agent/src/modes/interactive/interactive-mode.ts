@@ -2497,8 +2497,12 @@ export class InteractiveMode {
 			const filePath = path.join(tmpDir, fileName);
 			fs.writeFileSync(filePath, Buffer.from(image.bytes));
 
-			// Insert file path directly
-			this.editor.insertTextAtCursor?.(filePath);
+			// Custom editors may not support image markers; fall back to the old path insertion behavior.
+			if (this.editor.insertImageMarker) {
+				this.editor.insertImageMarker(filePath);
+			} else {
+				this.editor.insertTextAtCursor?.(filePath);
+			}
 			this.ui.requestRender();
 		} catch {
 			// Silently ignore clipboard errors (may not have permission, etc.)

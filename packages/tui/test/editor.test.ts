@@ -3927,4 +3927,65 @@ describe("Editor component", () => {
 			assert.strictEqual(submitted, pastedText);
 		});
 	});
+
+	describe("Image marker behavior", () => {
+		it("expands image markers to stored file paths", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.insertImageMarker("/tmp/pi-clipboard-a.png");
+
+			assert.strictEqual(editor.getText(), "[img #1]");
+			assert.strictEqual(editor.getExpandedText(), "/tmp/pi-clipboard-a.png");
+		});
+
+		it("renders image markers in cyan", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.insertImageMarker("/tmp/pi-clipboard-a.png");
+			const lines = editor.render(80);
+
+			assert.ok(lines.some((line) => line.includes("\x1b[36m[img #1]\x1b[0m")));
+		});
+
+		it("treats image markers as a single backspace unit", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.insertImageMarker("/tmp/pi-clipboard-a.png");
+			editor.handleInput("\x7f");
+
+			assert.strictEqual(editor.getText(), "");
+			assert.strictEqual(editor.getExpandedText(), "");
+		});
+
+		it("restores image marker mapping on undo after deletion", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.insertImageMarker("/tmp/pi-clipboard-a.png");
+			editor.handleInput("\x7f");
+			editor.handleInput("\x1b[45;5u");
+
+			assert.strictEqual(editor.getText(), "[img #1]");
+			assert.strictEqual(editor.getExpandedText(), "/tmp/pi-clipboard-a.png");
+		});
+
+		it("does not expand stale image markers after setText clears editor state", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.insertImageMarker("/tmp/pi-clipboard-a.png");
+			editor.setText("[img #1]");
+
+			assert.strictEqual(editor.getExpandedText(), "[img #1]");
+		});
+
+		it("does not reuse ids that could revive stale literal image markers", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.insertImageMarker("/tmp/pi-clipboard-a.png");
+			editor.setText("[img #1] ");
+			editor.insertImageMarker("/tmp/pi-clipboard-b.png");
+
+			assert.strictEqual(editor.getText(), "[img #1] [img #2]");
+			assert.strictEqual(editor.getExpandedText(), "[img #1] /tmp/pi-clipboard-b.png");
+		});
+	});
 });

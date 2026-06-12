@@ -186,6 +186,8 @@ export class Agent {
 	public prepareNextTurn?: (
 		signal?: AbortSignal,
 	) => Promise<AgentLoopTurnUpdate | undefined> | AgentLoopTurnUpdate | undefined;
+	public preprocessQueuedSteeringMessages?: (messages: AgentMessage[]) => Promise<AgentMessage[]>;
+	public preprocessQueuedFollowUpMessages?: (messages: AgentMessage[]) => Promise<AgentMessage[]>;
 	private activeRun?: ActiveRun;
 	/** Session identifier forwarded to providers for cache-aware backends. */
 	public sessionId?: string;
@@ -348,13 +350,23 @@ export class Agent {
 		if (lastMessage.role === "assistant") {
 			const queuedSteering = this.steeringQueue.drain();
 			if (queuedSteering.length > 0) {
-				await this.runPromptMessages(queuedSteering, { skipInitialSteeringPoll: true });
+				const nextSteering = this.preprocessQueuedSteeringMessages
+					? await this.preprocessQueuedSteeringMessages(queuedSteering)
+					: queuedSteering;
+				if (nextSteering.length > 0) {
+					await this.runPromptMessages(nextSteering, { skipInitialSteeringPoll: true });
+				}
 				return;
 			}
 
 			const queuedFollowUps = this.followUpQueue.drain();
 			if (queuedFollowUps.length > 0) {
-				await this.runPromptMessages(queuedFollowUps);
+				const nextFollowUps = this.preprocessQueuedFollowUpMessages
+					? await this.preprocessQueuedFollowUpMessages(queuedFollowUps)
+					: queuedFollowUps;
+				if (nextFollowUps.length > 0) {
+					await this.runPromptMessages(nextFollowUps);
+				}
 				return;
 			}
 
@@ -442,9 +454,13 @@ export class Agent {
 					skipInitialSteeringPoll = false;
 					return [];
 				}
-				return this.steeringQueue.drain();
+				const drained = this.steeringQueue.drain();
+				return this.preprocessQueuedSteeringMessages ? this.preprocessQueuedSteeringMessages(drained) : drained;
 			},
-			getFollowUpMessages: async () => this.followUpQueue.drain(),
+			getFollowUpMessages: async () => {
+				const drained = this.followUpQueue.drain();
+				return this.preprocessQueuedFollowUpMessages ? this.preprocessQueuedFollowUpMessages(drained) : drained;
+			},
 		};
 	}
 

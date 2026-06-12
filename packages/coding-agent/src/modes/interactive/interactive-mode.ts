@@ -1667,6 +1667,15 @@ export class InteractiveMode {
 			sessionManager: this.sessionManager,
 			modelRegistry: this.session.modelRegistry,
 			model: this.session.model,
+			setModel: async (model) => {
+				if (!this.session.modelRegistry.hasConfiguredAuth(model)) return false;
+				await this.session.setModel(model);
+				return true;
+			},
+			getThinkingLevel: () => this.session.thinkingLevel,
+			setThinkingLevel: (level) => {
+				this.session.setThinkingLevel(level);
+			},
 			isIdle: () => !this.session.isStreaming,
 			signal: this.session.agent.signal,
 			abort: () => {

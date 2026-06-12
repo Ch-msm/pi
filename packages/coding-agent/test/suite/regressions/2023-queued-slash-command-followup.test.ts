@@ -14,7 +14,7 @@ describe("issue #2023 queued slash-command follow-up", () => {
 		}
 	});
 
-	it("treats extension-origin queued slash-command follow-ups as raw user text instead of dispatching the command", async () => {
+	it("dispatches extension-origin queued slash-command follow-ups as extension commands", async () => {
 		let extensionApi: ExtensionAPI | undefined;
 		const commandRuns: string[] = [];
 		let releaseToolExecution: (() => void) | undefined;
@@ -53,7 +53,6 @@ describe("issue #2023 queued slash-command follow-up", () => {
 		harness.setResponses([
 			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
 			fauxAssistantMessage("first turn complete"),
-			fauxAssistantMessage("queued follow-up handled by model"),
 		]);
 
 		const sawToolStart = new Promise<void>((resolve) => {
@@ -72,9 +71,10 @@ describe("issue #2023 queued slash-command follow-up", () => {
 		extensionApi?.sendUserMessage("/testcmd queued", { deliverAs: "followUp" });
 		releaseToolExecution?.();
 		await promptPromise;
+		await harness.session.agent.waitForIdle();
 
-		expect(commandRuns).toEqual([]);
-		expect(getUserTexts(harness)).toEqual(["start", "/testcmd queued"]);
-		expect(getAssistantTexts(harness)).toContain("queued follow-up handled by model");
+		expect(commandRuns).toEqual(["queued"]);
+		expect(getUserTexts(harness)).toEqual(["start"]);
+		expect(getAssistantTexts(harness)).not.toContain("queued follow-up handled by model");
 	});
 });

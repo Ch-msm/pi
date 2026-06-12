@@ -312,6 +312,12 @@ export interface ExtensionContext {
 	modelRegistry: ModelRegistry;
 	/** Current model (may be undefined) */
 	model: Model<any> | undefined;
+	/** Set the current model. Returns false if no API key is available for the model. */
+	setModel(model: Model<any>): Promise<boolean>;
+	/** Get current thinking level. */
+	getThinkingLevel(): ThinkingLevel;
+	/** Set thinking level (clamped to model capabilities). */
+	setThinkingLevel(level: ThinkingLevel): void;
 	/** Whether the agent is idle (not streaming) */
 	isIdle(): boolean;
 	/** The current abort signal, or undefined when the agent is not streaming. */

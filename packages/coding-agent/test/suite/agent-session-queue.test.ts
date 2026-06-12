@@ -384,40 +384,230 @@ describe("AgentSession queue characterization", () => {
 		expect(harness.session.pendingMessageCount).toBe(0);
 	});
 
-	it("throws when queueing an extension command with steer", async () => {
+	it("queues an extension command with steer", async () => {
+		const commandRuns: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
 				(pi) => {
 					pi.registerCommand("testcmd", {
 						description: "Test command",
-						handler: async () => {},
+						handler: async (args) => {
+							commandRuns.push(args);
+						},
 					});
 				},
 			],
 		});
 		harnesses.push(harness);
 
-		await expect(harness.session.steer("/testcmd queued")).rejects.toThrow(
-			'Extension command "/testcmd" cannot be queued. Use prompt() or execute the command when not streaming.',
-		);
+		harness.setResponses([fauxAssistantMessage("reply"), fauxAssistantMessage("after steer")]);
+		await harness.session.prompt("hello");
+		await harness.session.agent.waitForIdle();
+
+		const promptPromise = harness.session.prompt("start", { streamingBehavior: undefined }).catch(() => undefined);
+		await expect(harness.session.steer("/testcmd queued")).resolves.toBeUndefined();
+		await promptPromise;
+		await harness.session.agent.waitForIdle();
+
+		expect(commandRuns).toContain("queued");
 	});
 
-	it("throws when queueing an extension command with followUp", async () => {
+	it("queues an extension command with followUp", async () => {
+		const commandRuns: string[] = [];
+		let releaseToolExecution: (() => void) | undefined;
+		const toolRelease = new Promise<void>((resolve) => {
+			releaseToolExecution = resolve;
+		});
+		const waitTool = {
+			name: "wait",
+			label: "Wait",
+			description: "Wait for the test to release execution",
+			parameters: Type.Object({}),
+			execute: async () => {
+				await toolRelease;
+				return {
+					content: [{ type: "text" as const, text: "released" }],
+					details: {},
+				};
+			},
+		};
 		const harness = await createHarness({
+			tools: [waitTool],
 			extensionFactories: [
 				(pi) => {
 					pi.registerCommand("testcmd", {
 						description: "Test command",
-						handler: async () => {},
+						handler: async (args) => {
+							commandRuns.push(args);
+						},
 					});
 				},
 			],
 		});
 		harnesses.push(harness);
 
-		await expect(harness.session.followUp("/testcmd queued")).rejects.toThrow(
-			'Extension command "/testcmd" cannot be queued. Use prompt() or execute the command when not streaming.',
-		);
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("first turn complete"),
+		]);
+
+		const sawToolStart = new Promise<void>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type === "tool_execution_start" && event.toolName === "wait") {
+					unsubscribe();
+					resolve();
+				}
+			});
+		});
+
+		const promptPromise = harness.session.prompt("start");
+		await sawToolStart;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		await expect(harness.session.followUp("/testcmd queued")).resolves.toBeUndefined();
+		releaseToolExecution?.();
+		await promptPromise;
+		await harness.session.agent.waitForIdle();
+
+		expect(commandRuns).toEqual(["queued"]);
+	});
+
+	it("executes duplicate queued extension command texts independently", async () => {
+		const commandRuns: string[] = [];
+		let releaseToolExecution: (() => void) | undefined;
+		const toolRelease = new Promise<void>((resolve) => {
+			releaseToolExecution = resolve;
+		});
+		const waitTool = {
+			name: "wait",
+			label: "Wait",
+			description: "Wait for the test to release execution",
+			parameters: Type.Object({}),
+			execute: async () => {
+				await toolRelease;
+				return {
+					content: [{ type: "text" as const, text: "released" }],
+					details: {},
+				};
+			},
+		};
+		const harness = await createHarness({
+			tools: [waitTool],
+			extensionFactories: [
+				(pi) => {
+					pi.registerCommand("testcmd", {
+						description: "Test command",
+						handler: async (args) => {
+							commandRuns.push(args);
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("first turn complete"),
+		]);
+
+		const sawToolStart = new Promise<void>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type === "tool_execution_start" && event.toolName === "wait") {
+					unsubscribe();
+					resolve();
+				}
+			});
+		});
+
+		const promptPromise = harness.session.prompt("start");
+		await sawToolStart;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		await harness.session.followUp("/testcmd dup");
+		await harness.session.followUp("/testcmd dup");
+		releaseToolExecution?.();
+		await promptPromise;
+		await harness.session.agent.waitForIdle();
+
+		expect(commandRuns).toEqual(["dup", "dup"]);
+	});
+
+	it("does not execute cleared queued extension commands later", async () => {
+		const commandRuns: string[] = [];
+		let releaseToolExecution: (() => void) | undefined;
+		const toolRelease = new Promise<void>((resolve) => {
+			releaseToolExecution = resolve;
+		});
+		const waitTool = {
+			name: "wait",
+			label: "Wait",
+			description: "Wait for the test to release execution",
+			parameters: Type.Object({}),
+			execute: async () => {
+				await toolRelease;
+				return {
+					content: [{ type: "text" as const, text: "released" }],
+					details: {},
+				};
+			},
+		};
+		const harness = await createHarness({
+			tools: [waitTool],
+			extensionFactories: [
+				(pi) => {
+					pi.registerCommand("testcmd", {
+						description: "Test command",
+						handler: async (args) => {
+							commandRuns.push(args);
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		let sawLiteralSlashMessage = false;
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("first turn complete"),
+			(context) => {
+				sawLiteralSlashMessage = context.messages.some(
+					(message) => message.role === "user" && getMessageText(message) === "/testcmd stale",
+				);
+				return fauxAssistantMessage("literal slash command remains literal");
+			},
+		]);
+
+		const sawToolStart = new Promise<void>((resolve) => {
+			const unsubscribe = harness.session.subscribe((event) => {
+				if (event.type === "tool_execution_start" && event.toolName === "wait") {
+					unsubscribe();
+					resolve();
+				}
+			});
+		});
+
+		const promptPromise = harness.session.prompt("start");
+		await sawToolStart;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		await harness.session.followUp("/testcmd stale");
+		harness.session.clearQueue();
+		releaseToolExecution?.();
+		await promptPromise;
+		await harness.session.agent.waitForIdle();
+
+		harness.session.agent.followUp({
+			role: "user",
+			content: [{ type: "text", text: "/testcmd stale" }],
+			timestamp: Date.now(),
+		});
+		await harness.session.agent.continue();
+		await harness.session.agent.waitForIdle();
+
+		expect(commandRuns).toEqual([]);
+		expect(sawLiteralSlashMessage).toBe(true);
 	});
 
 	it("delivers follow-ups queued during agent_end", async () => {

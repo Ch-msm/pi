@@ -607,6 +607,18 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return getModel();
 			},
+			setModel: (model) => {
+				runner.assertActive();
+				return runner.runtime.setModel(model);
+			},
+			getThinkingLevel: () => {
+				runner.assertActive();
+				return runner.runtime.getThinkingLevel();
+			},
+			setThinkingLevel: (level) => {
+				runner.assertActive();
+				runner.runtime.setThinkingLevel(level);
+			},
 			isIdle: () => {
 				runner.assertActive();
 				return runner.isIdleFn();

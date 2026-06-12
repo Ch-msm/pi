@@ -269,6 +269,7 @@ export class AgentSession {
 	private _steeringMessages: string[] = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
+	private _queuedExtensionCommands = new Map<string, number>();
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -344,6 +345,7 @@ export class AgentSession {
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 		this._installAgentToolHooks();
 		this._installAgentCompactionHook();
+		this._installQueuedExtensionCommandHook();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -506,6 +508,43 @@ export class AgentSession {
 				tools: this.agent.state.tools.slice(),
 			},
 		};
+	}
+
+	private _installQueuedExtensionCommandHook(): void {
+		this.agent.preprocessQueuedSteeringMessages = async (messages) =>
+			this._preprocessQueuedExtensionCommands(messages);
+		this.agent.preprocessQueuedFollowUpMessages = async (messages) =>
+			this._preprocessQueuedExtensionCommands(messages);
+	}
+
+	private async _preprocessQueuedExtensionCommands(messages: AgentMessage[]): Promise<AgentMessage[]> {
+		const remaining: AgentMessage[] = [];
+		for (const message of messages) {
+			const text = message.role === "user" ? this._getUserMessageText(message) : undefined;
+			if (!text || !text.startsWith("/") || !this._consumeQueuedExtensionCommand(text)) {
+				remaining.push(message);
+				continue;
+			}
+
+			const handled = await this._tryExecuteExtensionCommand(text);
+			if (!handled) {
+				remaining.push(message);
+			}
+		}
+		return remaining;
+	}
+
+	private _consumeQueuedExtensionCommand(text: string): boolean {
+		const count = this._queuedExtensionCommands.get(text);
+		if (!count) {
+			return false;
+		}
+		if (count === 1) {
+			this._queuedExtensionCommands.delete(text);
+		} else {
+			this._queuedExtensionCommands.set(text, count - 1);
+		}
+		return true;
 	}
 
 	private _shouldRunNextTurnCompaction(): boolean {
@@ -1282,9 +1321,9 @@ export class AgentSession {
 	 * @throws Error if text is an extension command
 	 */
 	async steer(text: string, images?: ImageContent[]): Promise<void> {
-		// Check for extension commands (cannot be queued)
-		if (text.startsWith("/")) {
-			this._throwIfExtensionCommand(text);
+		if (text.startsWith("/") && this._extensionRunner.getCommand(this._extractSlashCommandName(text))) {
+			await this._queueSteer(text, images);
+			return;
 		}
 
 		// Expand skill commands and prompt templates
@@ -1302,9 +1341,9 @@ export class AgentSession {
 	 * @throws Error if text is an extension command
 	 */
 	async followUp(text: string, images?: ImageContent[]): Promise<void> {
-		// Check for extension commands (cannot be queued)
-		if (text.startsWith("/")) {
-			this._throwIfExtensionCommand(text);
+		if (text.startsWith("/") && this._extensionRunner.getCommand(this._extractSlashCommandName(text))) {
+			await this._queueFollowUp(text, images);
+			return;
 		}
 
 		// Expand skill commands and prompt templates
@@ -1318,6 +1357,9 @@ export class AgentSession {
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
 	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
+		if (text.startsWith("/") && this._extensionRunner.getCommand(this._extractSlashCommandName(text))) {
+			this._queuedExtensionCommands.set(text, (this._queuedExtensionCommands.get(text) ?? 0) + 1);
+		}
 		this._steeringMessages.push(text);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
@@ -1335,6 +1377,9 @@ export class AgentSession {
 	 * Internal: Queue a follow-up message (already expanded, no extension command check).
 	 */
 	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
+		if (text.startsWith("/") && this._extensionRunner.getCommand(this._extractSlashCommandName(text))) {
+			this._queuedExtensionCommands.set(text, (this._queuedExtensionCommands.get(text) ?? 0) + 1);
+		}
 		this._followUpMessages.push(text);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
@@ -1348,19 +1393,9 @@ export class AgentSession {
 		});
 	}
 
-	/**
-	 * Throw an error if the text is an extension command.
-	 */
-	private _throwIfExtensionCommand(text: string): void {
+	private _extractSlashCommandName(text: string): string {
 		const spaceIndex = text.indexOf(" ");
-		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-		const command = this._extensionRunner.getCommand(commandName);
-
-		if (command) {
-			throw new Error(
-				`Extension command "/${commandName}" cannot be queued. Use prompt() or execute the command when not streaming.`,
-			);
-		}
+		return spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
 	}
 
 	/**
@@ -1460,6 +1495,7 @@ export class AgentSession {
 		const followUp = [...this._followUpMessages];
 		this._steeringMessages = [];
 		this._followUpMessages = [];
+		this._queuedExtensionCommands.clear();
 		this.agent.clearAllQueues();
 		this._emitQueueUpdate();
 		return { steering, followUp };

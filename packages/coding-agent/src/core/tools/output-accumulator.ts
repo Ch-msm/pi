@@ -145,34 +145,58 @@ export class OutputAccumulator {
 		return this.currentLineBytes;
 	}
 
+	private processControlChars(input: string): string {
+		const lastNewlineIdx = this.tailText.lastIndexOf('\n');
+		let head = lastNewlineIdx === -1 ? "" : this.tailText.slice(0, lastNewlineIdx + 1);
+		let buffer = lastNewlineIdx === -1 ? this.tailText : this.tailText.slice(lastNewlineIdx + 1);
+
+		for (let i = 0; i < input.length; i++) {
+			const ch = input[i];
+			if (ch === '\n') {
+				head += buffer + '\n';
+				buffer = "";
+			} else if (ch === '\r') {
+				buffer = "";
+			} else if (ch === '\b') {
+				if (buffer.length > 0) {
+					buffer = Array.from(buffer).slice(0, -1).join('');
+				}
+			} else {
+				buffer += ch;
+			}
+		}
+
+		return head + buffer;
+	}
+
 	private appendDecodedText(text: string): void {
 		if (text.length === 0) {
 			return;
 		}
 
-		const bytes = byteLength(text);
-		this.totalDecodedBytes += bytes;
-		this.tailText += text;
-		this.tailBytes += bytes;
+		// 处理终端控制字符（回车覆盖、退格删除）
+		const processed = this.processControlChars(text);
+
+		const oldTailBytes = byteLength(this.tailText);
+		const processedBytes = byteLength(processed);
+		this.totalDecodedBytes += processedBytes - oldTailBytes;
+
+		this.tailText = processed;
+		this.tailBytes = processedBytes;
 		if (this.tailBytes > this.maxRollingBytes * 2) {
 			this.trimTail();
 		}
 
 		let newlines = 0;
 		let lastNewline = -1;
-		for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) {
+		for (let i = this.tailText.indexOf("\n"); i !== -1; i = this.tailText.indexOf("\n", i + 1)) {
 			newlines++;
 			lastNewline = i;
 		}
-		if (newlines === 0) {
-			this.currentLineBytes += bytes;
-			this.hasOpenLine = true;
-		} else {
-			this.completedLines += newlines;
-			const tail = text.slice(lastNewline + 1);
-			this.currentLineBytes = byteLength(tail);
-			this.hasOpenLine = tail.length > 0;
-		}
+		this.completedLines = newlines;
+		const tail = lastNewline === -1 ? this.tailText : this.tailText.slice(lastNewline + 1);
+		this.currentLineBytes = byteLength(tail);
+		this.hasOpenLine = tail.length > 0;
 		this.totalLines = this.completedLines + (this.hasOpenLine ? 1 : 0);
 	}
 

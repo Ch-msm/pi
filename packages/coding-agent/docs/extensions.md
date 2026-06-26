@@ -2619,7 +2619,6 @@ All examples in [examples/extensions/](../examples/extensions/).
 | `message-renderer.ts` | Custom message rendering | `registerMessageRenderer`, `sendMessage` |
 | `event-bus.ts` | Inter-extension events | `pi.events` |
 | **Session Metadata** |||
-| `session-name.ts` | Name sessions for selector | `setSessionName`, `getSessionName` |
 | `bookmark.ts` | Bookmark entries for /tree | `setLabel` |
 | **Misc** |||
 | `inline-bash.ts` | Inline bash in tool calls | `on("tool_call")` |

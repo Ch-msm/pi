@@ -8,6 +8,7 @@
 - Added the latest prompt cache hit rate to the interactive footer.
 - Exported RPC extension UI request and response types from the public API ([#5455](https://github.com/earendil-works/pi/issues/5455)).
 - Exported coding-agent package asset path helpers from the public API ([#5415](https://github.com/earendil-works/pi/issues/5415)).
+- Added `model` setting to `CompactionSettings` to allow specifying a separate model for context compaction, defaulting to the current session model.
 
 ### Fixed
 

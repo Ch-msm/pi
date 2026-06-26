@@ -397,6 +397,37 @@ export class AgentSession {
 	}
 
 	/**
+	 * Resolve the model to use for compaction, if configured in settings.
+	 * Returns undefined if compaction.model is not set, the model string is invalid,
+	 * or the model is not found in the registry.
+	 */
+	private _resolveCompactionModel(): Model<any> | undefined {
+		const modelId = this.settingsManager.getCompactionModel();
+		if (!modelId) return undefined;
+
+		let provider: string;
+		let id: string;
+
+		if (modelId.includes(":")) {
+			const colonIndex = modelId.indexOf(":");
+			provider = modelId.slice(0, colonIndex);
+			id = modelId.slice(colonIndex + 1);
+		} else if (modelId.includes("/")) {
+			const slashIndex = modelId.indexOf("/");
+			provider = modelId.slice(0, slashIndex);
+			id = modelId.slice(slashIndex + 1);
+		} else {
+			// Just model name, resolve against default provider
+			const defaultProvider = this.settingsManager.getDefaultProvider();
+			if (!defaultProvider) return undefined;
+			provider = defaultProvider;
+			id = modelId;
+		}
+
+		return this._modelRegistry.find(provider, id) ?? undefined;
+	}
+
+	/**
 	 * Install tool hooks once on the Agent instance.
 	 *
 	 * The callbacks read `this._extensionRunner` at execution time, so extension reload swaps in the
@@ -1753,11 +1784,12 @@ export class AgentSession {
 		this._emit({ type: "compaction_start", reason: "manual" });
 
 		try {
-			if (!this.model) {
+			const compactModel = this._resolveCompactionModel() ?? this.model;
+			if (!compactModel) {
 				throw new Error(formatNoModelSelectedMessage());
 			}
 
-			const { apiKey, headers } = await this._getCompactionRequestAuth(this.model);
+			const { apiKey, headers } = await this._getCompactionRequestAuth(compactModel);
 
 			const pathEntries = this.sessionManager.getBranch();
 			const settings = this.settingsManager.getCompactionSettings();
@@ -1809,7 +1841,7 @@ export class AgentSession {
 				// Generate compaction result
 				const result = await compact(
 					preparation,
-					this.model,
+					compactModel,
 					apiKey,
 					headers,
 					customInstructions,
@@ -1993,7 +2025,8 @@ export class AgentSession {
 		this._autoCompactionAbortController = new AbortController();
 
 		try {
-			if (!this.model) {
+			const compactModel = this._resolveCompactionModel() ?? this.model;
+			if (!compactModel) {
 				this._emit({
 					type: "compaction_end",
 					reason,
@@ -2007,7 +2040,7 @@ export class AgentSession {
 			let apiKey: string | undefined;
 			let headers: Record<string, string> | undefined;
 			if (this.agent.streamFn === streamSimple) {
-				const authResult = await this._modelRegistry.getApiKeyAndHeaders(this.model);
+				const authResult = await this._modelRegistry.getApiKeyAndHeaders(compactModel);
 				if (!authResult.ok || !authResult.apiKey) {
 					this._emit({
 						type: "compaction_end",
@@ -2021,7 +2054,7 @@ export class AgentSession {
 				apiKey = authResult.apiKey;
 				headers = authResult.headers;
 			} else {
-				({ apiKey, headers } = await this._getCompactionRequestAuth(this.model));
+				({ apiKey, headers } = await this._getCompactionRequestAuth(compactModel));
 			}
 
 			const pathEntries = this.sessionManager.getBranch();
@@ -2082,7 +2115,7 @@ export class AgentSession {
 				// Generate compaction result
 				const compactResult = await compact(
 					preparation,
-					this.model,
+					compactModel,
 					apiKey,
 					headers,
 					undefined,

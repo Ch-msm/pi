@@ -146,20 +146,20 @@ export class OutputAccumulator {
 	}
 
 	private processControlChars(input: string): string {
-		const lastNewlineIdx = this.tailText.lastIndexOf('\n');
+		const lastNewlineIdx = this.tailText.lastIndexOf("\n");
 		let head = lastNewlineIdx === -1 ? "" : this.tailText.slice(0, lastNewlineIdx + 1);
 		let buffer = lastNewlineIdx === -1 ? this.tailText : this.tailText.slice(lastNewlineIdx + 1);
 
 		for (let i = 0; i < input.length; i++) {
 			const ch = input[i];
-			if (ch === '\n') {
-				head += buffer + '\n';
+			if (ch === "\n") {
+				head += buffer + "\n";
 				buffer = "";
-			} else if (ch === '\r') {
+			} else if (ch === "\r") {
 				buffer = "";
-			} else if (ch === '\b') {
+			} else if (ch === "\b") {
 				if (buffer.length > 0) {
-					buffer = Array.from(buffer).slice(0, -1).join('');
+					buffer = Array.from(buffer).slice(0, -1).join("");
 				}
 			} else {
 				buffer += ch;

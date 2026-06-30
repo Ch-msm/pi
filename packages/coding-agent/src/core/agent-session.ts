@@ -121,6 +121,31 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 	};
 }
 
+/**
+ * Parse all skill blocks from message text.
+ * Handles multiple sequential <skill> blocks.
+ */
+export function parseSkillBlocks(text: string): ParsedSkillBlock[] {
+	const blocks: ParsedSkillBlock[] = [];
+	const regex = /<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill>/g;
+	for (const match of text.matchAll(regex)) {
+		blocks.push({
+			name: match[1],
+			location: match[2],
+			content: match[3],
+			userMessage: undefined,
+		});
+	}
+	return blocks;
+}
+
+/**
+ * Remove all <skill> blocks from text, returning the remaining message.
+ */
+export function removeSkillBlocks(text: string): string {
+	return text.replace(/<skill name="[^"]+" location="[^"]+">\n[\s\S]*?\n<\/skill>\n?/g, "").trim();
+}
+
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
 	| Exclude<AgentEvent, { type: "agent_end" }>
@@ -1167,10 +1192,10 @@ export class AgentSession {
 				}
 			}
 
-			// Expand skill commands (/skill:name args) and prompt templates (/template args)
+			// Expand inline skills ($name) and prompt templates
 			let expandedText = currentText;
 			if (expandPromptTemplates) {
-				expandedText = this._expandSkillCommand(expandedText);
+				expandedText = this._expandInlineSkills(expandedText);
 				expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 			}
 
@@ -1313,41 +1338,35 @@ export class AgentSession {
 	}
 
 	/**
-	 * Expand skill commands (/skill:name args) to their full content.
-	 * Returns the expanded text, or the original text if not a skill command or skill not found.
-	 * Emits errors via extension runner if file read fails.
+	 * Expand inline skill references ($name) in text.
+	 * Replaces all occurrences of $knownSkillName with the skill's content block.
+	 * Unknown $name patterns pass through unchanged.
 	 */
-	private _expandSkillCommand(text: string): string {
-		if (!text.startsWith("/skill:")) return text;
+	private _expandInlineSkills(text: string): string {
+		return text.replace(/(?<!\w)\$([a-z][a-z0-9-]*)/g, (match, skillName) => {
+			const skill = this.resourceLoader.getSkills().skills.find((s) => s.name === skillName);
+			if (!skill) return match;
 
-		const spaceIndex = text.indexOf(" ");
-		const skillName = spaceIndex === -1 ? text.slice(7) : text.slice(7, spaceIndex);
-		const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1).trim();
-
-		const skill = this.resourceLoader.getSkills().skills.find((s) => s.name === skillName);
-		if (!skill) return text; // Unknown skill, pass through
-
-		try {
-			const content = readFileSync(skill.filePath, "utf-8");
-			const body = stripFrontmatter(content).trim();
-			const skillBlock = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
-			return args ? `${skillBlock}\n\n${args}` : skillBlock;
-		} catch (err) {
-			// Emit error like extension commands do
-			this._extensionRunner.emitError({
-				extensionPath: skill.filePath,
-				event: "skill_expansion",
-				error: err instanceof Error ? err.message : String(err),
-			});
-			return text; // Return original on error
-		}
+			try {
+				const content = readFileSync(skill.filePath, "utf-8");
+				const body = stripFrontmatter(content).trim();
+				return `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
+			} catch (err) {
+				this._extensionRunner.emitError({
+					extensionPath: skill.filePath,
+					event: "skill_expansion",
+					error: err instanceof Error ? err.message : String(err),
+				});
+				return match;
+			}
+		});
 	}
 
 	/**
 	 * Queue a steering message while the agent is running.
 	 * Delivered after the current assistant turn finishes executing its tool calls,
 	 * before the next LLM call.
-	 * Expands skill commands and prompt templates. Errors on extension commands.
+	 * Expands inline skills and prompt templates. Errors on extension commands.
 	 * @param images Optional image attachments to include with the message
 	 * @throws Error if text is an extension command
 	 */
@@ -1357,8 +1376,8 @@ export class AgentSession {
 			return;
 		}
 
-		// Expand skill commands and prompt templates
-		let expandedText = this._expandSkillCommand(text);
+		// Expand inline skills and prompt templates
+		let expandedText = this._expandInlineSkills(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		await this._queueSteer(expandedText, images);
@@ -1367,7 +1386,7 @@ export class AgentSession {
 	/**
 	 * Queue a follow-up message to be processed after the agent finishes.
 	 * Delivered only when agent has no more tool calls or steering messages.
-	 * Expands skill commands and prompt templates. Errors on extension commands.
+	 * Expands inline skills and prompt templates. Errors on extension commands.
 	 * @param images Optional image attachments to include with the message
 	 * @throws Error if text is an extension command
 	 */
@@ -1377,8 +1396,8 @@ export class AgentSession {
 			return;
 		}
 
-		// Expand skill commands and prompt templates
-		let expandedText = this._expandSkillCommand(text);
+		// Expand inline skills and prompt templates
+		let expandedText = this._expandInlineSkills(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
 		await this._queueFollowUp(expandedText, images);

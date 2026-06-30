@@ -39,6 +39,7 @@ function isAtomicMarker(segment: string): boolean {
 }
 
 const CYAN = "\x1b[36m";
+const PURPLE = "\x1b[35m";
 const RESET = "\x1b[0m";
 
 /**
@@ -280,6 +281,19 @@ export class Editor implements Component, Focusable {
 
 	// Border color (can be changed dynamically)
 	public borderColor: (str: string) => string;
+
+	// Known skill names for $name highlighting
+	skillNames: Set<string> = new Set();
+	skillColor: string = PURPLE;
+
+	/** Set skill names for $name highlighting. */
+	setSkillNames(names: Set<string>, color?: string): void {
+		this.skillNames = names;
+		if (color !== undefined) {
+			this.skillColor = color;
+		}
+		this.tui.requestRender();
+	}
 
 	// Autocomplete support
 	private autocompleteProvider?: AutocompleteProvider;
@@ -584,6 +598,16 @@ export class Editor implements Component, Focusable {
 
 			// Apply cyan color to image markers
 			displayText = displayText.replace(IMAGE_MARKER_REGEX, `${CYAN}$&${RESET}`);
+
+			// Apply purple color to known skill references ($name)
+			if (this.skillNames.size > 0) {
+				displayText = displayText.replace(/(?<!\w)\$([a-z][a-z0-9-]*)/g, (match, name) => {
+					if (this.skillNames.has(name)) {
+						return `${this.skillColor}${match}${RESET}`;
+					}
+					return match;
+				});
+			}
 
 			// Calculate padding based on actual visible width
 			const padding = " ".repeat(Math.max(0, contentWidth - lineVisibleWidth));
@@ -1164,8 +1188,8 @@ export class Editor implements Component, Focusable {
 			if (char === "/" && this.isAtStartOfMessage()) {
 				this.tryTriggerAutocomplete();
 			}
-			// Auto-trigger for symbol-based completion like @ or # at token boundaries
-			else if (char === "@" || char === "#") {
+			// Auto-trigger for symbol-based completion like @, #, or $ at token boundaries
+			else if (char === "@" || char === "#" || char === "$") {
 				const currentLine = this.state.lines[this.state.cursorLine] || "";
 				const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
 				const charBeforeSymbol = textBeforeCursor[textBeforeCursor.length - 2];
@@ -1181,8 +1205,8 @@ export class Editor implements Component, Focusable {
 				if (this.isInSlashCommandContext(textBeforeCursor)) {
 					this.tryTriggerAutocomplete();
 				}
-				// Check if we're in a symbol-based completion context like @ or #
-				else if (textBeforeCursor.match(/(?:^|[\s])[@#][^\s]*$/)) {
+				// Check if we're in a symbol-based completion context like @, #, or $
+				else if (textBeforeCursor.match(/(?:^|[\s])[@#$][^\s]*$/)) {
 					this.tryTriggerAutocomplete();
 				}
 			}
@@ -2131,6 +2155,9 @@ export class Editor implements Component, Focusable {
 
 		if (this.isInSlashCommandContext(beforeCursor) && !beforeCursor.trimStart().includes(" ")) {
 			this.handleSlashCommandCompletion();
+		} else if (/(?:^|[\s])\$[a-z][a-z0-9-]*$/i.test(beforeCursor)) {
+			// Skill completion via $
+			this.requestAutocomplete({ force: false, explicitTab: true });
 		} else {
 			this.forceFileAutocomplete(true);
 		}

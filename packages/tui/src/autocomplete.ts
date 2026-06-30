@@ -269,11 +269,18 @@ export interface AutocompleteProvider {
 // Combined provider that handles both slash commands and file paths
 export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	private commands: (SlashCommand | AutocompleteItem)[];
+	private dollarCommands: AutocompleteItem[];
 	private basePath: string;
 	private fdPath: string | null;
 
-	constructor(commands: (SlashCommand | AutocompleteItem)[] = [], basePath: string, fdPath: string | null = null) {
+	constructor(
+		commands: (SlashCommand | AutocompleteItem)[] = [],
+		basePath: string,
+		fdPath: string | null = null,
+		dollarCommands: AutocompleteItem[] = [],
+	) {
 		this.commands = commands;
+		this.dollarCommands = dollarCommands;
 		this.basePath = basePath;
 		this.fdPath = fdPath;
 	}
@@ -299,6 +306,31 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			return {
 				items: suggestions,
 				prefix: atPrefix,
+			};
+		}
+
+		// Check for $ prefix (skill name completion)
+		const dollarPrefix = this.extractDollarPrefix(textBeforeCursor);
+		if (dollarPrefix !== null && !options.force) {
+			const query = dollarPrefix.slice(1); // text after $
+			const items = this.dollarCommands.map((cmd) => ({
+				value: cmd.value,
+				name: cmd.label,
+				label: cmd.label,
+				description: cmd.description,
+			}));
+
+			const filtered = fuzzyFilter(items, query, (item) => item.name).map((item) => ({
+				value: item.value,
+				label: item.label,
+				...(item.description && { description: item.description }),
+			}));
+
+			if (filtered.length === 0) return null;
+
+			return {
+				items: filtered,
+				prefix: dollarPrefix,
 			};
 		}
 
@@ -421,6 +453,19 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			};
 		}
 
+		// Check if we're completing a $ skill name
+		if (prefix.startsWith("$")) {
+			const newLine = `${beforePrefix}${item.value} ${adjustedAfterCursor}`;
+			const newLines = [...lines];
+			newLines[cursorLine] = newLine;
+
+			return {
+				lines: newLines,
+				cursorLine,
+				cursorCol: beforePrefix.length + item.value.length + 1,
+			};
+		}
+
 		// Check if we're in a slash command context (beforePrefix contains "/command ")
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
 		if (textBeforeCursor.includes("/") && textBeforeCursor.includes(" ")) {
@@ -467,6 +512,18 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const tokenStart = lastDelimiterIndex === -1 ? 0 : lastDelimiterIndex + 1;
 
 		if (text[tokenStart] === "@") {
+			return text.slice(tokenStart);
+		}
+
+		return null;
+	}
+
+	// Extract $ prefix for skill name completion
+	private extractDollarPrefix(text: string): string | null {
+		const lastDelimiterIndex = findLastDelimiter(text);
+		const tokenStart = lastDelimiterIndex === -1 ? 0 : lastDelimiterIndex + 1;
+
+		if (text[tokenStart] === "$") {
 			return text.slice(tokenStart);
 		}
 

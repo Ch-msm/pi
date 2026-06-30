@@ -60,7 +60,12 @@ import {
 	VERSION,
 	VERSION_CHECK_ENABLED,
 } from "../../config.ts";
-import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
+import {
+	type AgentSession,
+	type AgentSessionEvent,
+	parseSkillBlocks,
+	removeSkillBlocks,
+} from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import type {
 	AutocompleteProviderFactory,
@@ -315,9 +320,6 @@ export class InteractiveMode {
 	// Thinking block visibility state
 	private hideThinkingBlock = false;
 
-	// Skill commands: command name -> skill file path
-	private skillCommands = new Map<string, string>();
-
 	// Agent subscription unsubscribe function
 	private unsubscribe?: () => void;
 	private signalCleanupHandlers: Array<() => void> = [];
@@ -531,24 +533,29 @@ export class InteractiveMode {
 				getArgumentCompletions: cmd.getArgumentCompletions,
 			}));
 
-		// Build skill commands from session.skills (if enabled)
-		this.skillCommands.clear();
-		const skillCommandList: SlashCommand[] = [];
+		// Build skill items for $ prefix completion and highlighting
+		const skillItems: AutocompleteItem[] = [];
+		const skillNames = new Set<string>();
 		if (this.settingsManager.getEnableSkillCommands()) {
 			for (const skill of this.session.resourceLoader.getSkills().skills) {
-				const commandName = `skill:${skill.name}`;
-				this.skillCommands.set(commandName, skill.filePath);
-				skillCommandList.push({
-					name: commandName,
+				skillNames.add(skill.name);
+				skillItems.push({
+					value: `$${skill.name}`,
+					label: skill.name,
 					description: this.prefixAutocompleteDescription(skill.description, skill.sourceInfo),
 				});
 			}
 		}
 
+		// Update editor highlighting for skill names (bold + theme color)
+		const skillColor = `\x1b[1m${theme.getFgAnsi("customMessageLabel")}`;
+		this.defaultEditor.setSkillNames(skillNames, skillColor);
+
 		return new CombinedAutocompleteProvider(
-			[...slashCommands, ...templateCommands, ...extensionCommands, ...skillCommandList],
+			[...slashCommands, ...templateCommands, ...extensionCommands],
 			this.sessionManager.getCwd(),
 			this.fdPath,
+			skillItems,
 		);
 	}
 
@@ -3167,22 +3174,22 @@ export class InteractiveMode {
 					if (this.chatContainer.children.length > 0) {
 						this.chatContainer.addChild(new Spacer(1));
 					}
-					const skillBlock = parseSkillBlock(textContent);
-					if (skillBlock) {
-						// Render skill block (collapsible)
-						const component = new SkillInvocationMessageComponent(
-							skillBlock,
-							this.getMarkdownThemeWithSettings(),
-						);
-						component.setExpanded(this.toolOutputExpanded);
-						this.chatContainer.addChild(component);
-						// Render user message separately if present
-						if (skillBlock.userMessage) {
-							this.chatContainer.addChild(new Spacer(1));
-							const userComponent = new UserMessageComponent(
-								skillBlock.userMessage,
+					const skillBlocks = parseSkillBlocks(textContent);
+					if (skillBlocks.length > 0) {
+						// Render each skill block (collapsible)
+						for (const skillBlock of skillBlocks) {
+							const component = new SkillInvocationMessageComponent(
+								skillBlock,
 								this.getMarkdownThemeWithSettings(),
 							);
+							component.setExpanded(this.toolOutputExpanded);
+							this.chatContainer.addChild(component);
+						}
+						// Render remaining user message if any
+						const userMessage = removeSkillBlocks(textContent);
+						if (userMessage) {
+							this.chatContainer.addChild(new Spacer(1));
+							const userComponent = new UserMessageComponent(userMessage, this.getMarkdownThemeWithSettings());
 							this.chatContainer.addChild(userComponent);
 						}
 					} else {

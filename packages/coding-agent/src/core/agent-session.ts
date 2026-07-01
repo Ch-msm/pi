@@ -299,6 +299,8 @@ export class AgentSession {
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 	/** Custom messages already emitted to UI before _runAgentPrompt, to avoid double rendering. */
 	private _emittedCustomMessages = new WeakSet<AgentMessage>();
+	/** turn_start was pre-emitted by sendCustomMessage triggerTurn; skip agent loop's duplicate. */
+	private _preEmittedTurnStart = false;
 
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
@@ -672,6 +674,14 @@ export class AgentSession {
 
 		// Emit to extensions first
 		await this._emitExtensionEvent(event);
+
+		// Skip duplicate turn_start that was pre-emitted by sendCustomMessage
+		// with triggerTurn. Extensions already received it via _emitExtensionEvent;
+		// the TUI already received the pre-emitted event in sendCustomMessage.
+		if (event.type === "turn_start" && this._preEmittedTurnStart) {
+			this._preEmittedTurnStart = false;
+			return;
+		}
 
 		// Skip duplicate custom messages already emitted by sendCustomMessage.
 		// When _runAgentPrompt is called, the agent loop re-emits message_start/
@@ -1495,9 +1505,12 @@ export class AgentSession {
 				this.agent.steer(appMessage);
 			}
 		} else if (options?.triggerTurn) {
-			// Emit to UI before starting the agent turn, so the message appears immediately.
-			// The agent loop will also emit message_start/message_end for this message;
-			// _handleAgentEvent skips duplicates via _emittedCustomMessages.
+			// Emit turn_start + message to UI before starting the agent turn, so the message
+			// appears immediately within a proper turn boundary. The agent loop will re-emit
+			// both turn_start and message_start/message_end for this message;
+			// _handleAgentEvent skips duplicates via _preEmittedTurnStart and _emittedCustomMessages.
+			this._preEmittedTurnStart = true;
+			this._emit({ type: "turn_start" });
 			this._emittedCustomMessages.add(appMessage);
 			this.sessionManager.appendCustomMessageEntry(
 				message.customType,
@@ -1507,7 +1520,11 @@ export class AgentSession {
 			);
 			this._emit({ type: "message_start", message: appMessage });
 			this._emit({ type: "message_end", message: appMessage });
-			await this._runAgentPrompt(appMessage);
+			try {
+				await this._runAgentPrompt(appMessage);
+			} finally {
+				this._preEmittedTurnStart = false;
+			}
 		} else {
 			this.agent.state.messages.push(appMessage);
 			this.sessionManager.appendCustomMessageEntry(

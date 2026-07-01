@@ -297,6 +297,8 @@ export class AgentSession {
 	private _queuedExtensionCommands = new Map<string, number>();
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
+	/** Custom messages already emitted to UI before _runAgentPrompt, to avoid double rendering. */
+	private _emittedCustomMessages = new WeakSet<AgentMessage>();
 
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
@@ -670,6 +672,18 @@ export class AgentSession {
 
 		// Emit to extensions first
 		await this._emitExtensionEvent(event);
+
+		// Skip duplicate custom messages already emitted by sendCustomMessage.
+		// When _runAgentPrompt is called, the agent loop re-emits message_start/
+		// message_end for the same message object.  We still run _emitExtensionEvent
+		// above so extensions see the event; we skip TUI emit + persistence.
+		if (
+			(event.type === "message_start" || event.type === "message_end") &&
+			event.message.role === "custom" &&
+			this._emittedCustomMessages.has(event.message)
+		) {
+			return;
+		}
 
 		// Notify all listeners
 		this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);
@@ -1481,6 +1495,18 @@ export class AgentSession {
 				this.agent.steer(appMessage);
 			}
 		} else if (options?.triggerTurn) {
+			// Emit to UI before starting the agent turn, so the message appears immediately.
+			// The agent loop will also emit message_start/message_end for this message;
+			// _handleAgentEvent skips duplicates via _emittedCustomMessages.
+			this._emittedCustomMessages.add(appMessage);
+			this.sessionManager.appendCustomMessageEntry(
+				message.customType,
+				message.content,
+				message.display,
+				message.details,
+			);
+			this._emit({ type: "message_start", message: appMessage });
+			this._emit({ type: "message_end", message: appMessage });
 			await this._runAgentPrompt(appMessage);
 		} else {
 			this.agent.state.messages.push(appMessage);

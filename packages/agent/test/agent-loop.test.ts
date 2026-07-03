@@ -1228,6 +1228,160 @@ describe("agentLoop with AgentMessage", () => {
 
 		expect(llmCalls).toBe(1);
 	});
+
+	it("should reject tool calls exceeding the per-turn limit without executing them", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const executed: string[] = [];
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				return {
+					content: [{ type: "text", text: `echoed: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [tool],
+		};
+
+		const userPrompt: AgentMessage = createUserMessage("echo many");
+
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			maxToolCallsPerTurn: 3,
+		};
+
+		// First call: emit 5 tool calls (exceeding the limit of 3); second call ends normally
+		let callIndex = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callIndex === 0) {
+					const content = Array.from({ length: 5 }, (_, i) => ({
+						type: "toolCall" as const,
+						id: `tool-${i + 1}`,
+						name: "echo",
+						arguments: { value: `v${i + 1}` },
+					}));
+					const message = createAssistantMessage(content, "toolUse");
+					stream.push({ type: "done", reason: "toolUse", message });
+				} else {
+					const message = createAssistantMessage([{ type: "text", text: "done" }]);
+					stream.push({ type: "done", reason: "stop", message });
+				}
+				callIndex++;
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		// No tool should have been executed
+		expect(executed).toEqual([]);
+
+		// Each rejected call should emit start/end, and every end should be an error
+		const starts = events.filter((e) => e.type === "tool_execution_start");
+		const ends = events.filter((e) => e.type === "tool_execution_end");
+		expect(starts.length).toBe(5);
+		expect(ends.length).toBe(5);
+		expect(ends.every((e) => (e as any).isError === true)).toBe(true);
+
+		// There should be 5 error tool-result messages
+		const toolResults = events.filter((e) => e.type === "message_end" && (e as any).message?.role === "toolResult");
+		expect(toolResults.length).toBe(5);
+		const firstResult = (toolResults[0] as any).message;
+		expect(firstResult.isError).toBe(true);
+		expect(firstResult.content[0].text).toContain("exceeding the per-turn limit");
+
+		// The model should re-plan after the errors and end normally
+		const finalText = events.find(
+			(e) =>
+				e.type === "message_end" &&
+				(e as any).message?.role === "assistant" &&
+				(e as any).message?.content?.some((c: any) => c.type === "text"),
+		);
+		expect(finalText).toBeDefined();
+	});
+
+	it("should execute tool calls at or below the per-turn limit", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const executed: string[] = [];
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				return {
+					content: [{ type: "text", text: `echoed: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [tool],
+		};
+
+		const userPrompt: AgentMessage = createUserMessage("echo three");
+
+		// Limit 3, this turn emits exactly 3 → all should execute
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			maxToolCallsPerTurn: 3,
+		};
+
+		let callIndex = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callIndex === 0) {
+					const content = Array.from({ length: 3 }, (_, i) => ({
+						type: "toolCall" as const,
+						id: `tool-${i + 1}`,
+						name: "echo",
+						arguments: { value: `v${i + 1}` },
+					}));
+					const message = createAssistantMessage(content, "toolUse");
+					stream.push({ type: "done", reason: "toolUse", message });
+				} else {
+					const message = createAssistantMessage([{ type: "text", text: "done" }]);
+					stream.push({ type: "done", reason: "stop", message });
+				}
+				callIndex++;
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		// Tools at the limit should all execute
+		expect(executed).toEqual(["v1", "v2", "v3"]);
+		const ends = events.filter((e) => e.type === "tool_execution_end");
+		expect(ends.length).toBe(3);
+		expect(ends.every((e) => (e as any).isError === false)).toBe(true);
+	});
 });
 
 describe("agentLoopContinue with AgentMessage", () => {

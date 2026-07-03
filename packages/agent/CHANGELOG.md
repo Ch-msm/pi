@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a per-turn tool-call limit (`maxToolCallsPerTurn`, default 10). When a single assistant message requests more tool calls than the limit, the loop rejects the batch without executing any of them and returns an error result per call, prompting the model to split work into smaller steps and wait for results before continuing.
+
 ### Fixed
 
 - Fixed the compaction summarization system prompt to use neutral AI assistant wording for non-coding agents ([#5401](https://github.com/earendil-works/pi/issues/5401)).

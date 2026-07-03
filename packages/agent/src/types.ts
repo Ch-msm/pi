@@ -13,6 +13,16 @@ import type {
 import type { Static, TSchema } from "typebox";
 
 /**
+ * Maximum number of tool calls allowed in a single assistant message.
+ * When exceeded, the loop rejects the batch without executing any of them and
+ * returns an error result per call, prompting the model to split work into
+ * smaller steps and wait for results before continuing. This prevents a model
+ * from issuing an unbounded number of tool calls in one turn (e.g. repeatedly
+ * searching the same term with varied syntax) without converging.
+ */
+export const DEFAULT_MAX_TOOL_CALLS_PER_TURN = 10;
+
+/**
  * Stream function used by the agent loop.
  *
  * Contract:
@@ -252,6 +262,15 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * Default: "parallel"
 	 */
 	toolExecution?: ToolExecutionMode;
+
+	/**
+	 * Maximum number of tool calls allowed in a single assistant message. When exceeded,
+	 * the batch is not executed; instead an error result is returned per tool call prompting
+	 * the model to split into smaller steps, and the conversation continues to the next turn.
+	 *
+	 * Defaults to {@link DEFAULT_MAX_TOOL_CALLS_PER_TURN}. Set to 0 or a negative value to disable.
+	 */
+	maxToolCallsPerTurn?: number;
 
 	/**
 	 * Called before a tool is executed, after arguments have been validated.

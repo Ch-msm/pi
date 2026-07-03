@@ -21,6 +21,7 @@ import type {
 	AgentToolResult,
 	StreamFn,
 } from "./types.ts";
+import { DEFAULT_MAX_TOOL_CALLS_PER_TURN } from "./types.ts";
 
 export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
 
@@ -378,6 +379,10 @@ async function executeToolCalls(
 	emit: AgentEventSink,
 ): Promise<ExecutedToolCallBatch> {
 	const toolCalls = assistantMessage.content.filter((c) => c.type === "toolCall");
+	const maxToolCallsPerTurn = config.maxToolCallsPerTurn ?? DEFAULT_MAX_TOOL_CALLS_PER_TURN;
+	if (maxToolCallsPerTurn > 0 && toolCalls.length > maxToolCallsPerTurn) {
+		return rejectToolCallsOverLimit(toolCalls, maxToolCallsPerTurn, emit);
+	}
 	const hasSequentialToolCall = toolCalls.some(
 		(tc) => currentContext.tools?.find((t) => t.name === tc.name)?.executionMode === "sequential",
 	);
@@ -385,6 +390,39 @@ async function executeToolCalls(
 		return executeToolCallsSequential(currentContext, assistantMessage, toolCalls, config, signal, emit);
 	}
 	return executeToolCallsParallel(currentContext, assistantMessage, toolCalls, config, signal, emit);
+}
+
+/**
+ * Handles a single assistant message whose tool-call count exceeds the per-turn limit:
+ * no tool is executed; instead an error result is returned per tool call prompting the
+ * model to split into smaller steps (at most the limit per step) and wait for results
+ * before continuing. Returns terminate=false so the model can re-plan.
+ */
+async function rejectToolCallsOverLimit(
+	toolCalls: AgentToolCall[],
+	maxToolCallsPerTurn: number,
+	emit: AgentEventSink,
+): Promise<ExecutedToolCallBatch> {
+	const limitMessage =
+		`This message contains ${toolCalls.length} tool calls, exceeding the per-turn limit of ${maxToolCallsPerTurn}. ` +
+		"Split tool calls into smaller batches (at most the limit per step), execute them, and wait for results before continuing; " +
+		"do not issue an unbounded number of tool calls in a single turn.";
+	const messages: ToolResultMessage[] = [];
+	for (const toolCall of toolCalls) {
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: toolCall.id,
+			toolName: toolCall.name,
+			args: toolCall.arguments,
+		});
+		const result = createErrorToolResult(limitMessage);
+		const finalized: FinalizedToolCallOutcome = { toolCall, result, isError: true };
+		await emitToolExecutionEnd(finalized, emit);
+		const toolResultMessage = createToolResultMessage(finalized);
+		await emitToolResultMessage(toolResultMessage, emit);
+		messages.push(toolResultMessage);
+	}
+	return { messages, terminate: false };
 }
 
 type ExecutedToolCallBatch = {

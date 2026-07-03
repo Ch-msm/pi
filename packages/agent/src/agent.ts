@@ -25,6 +25,7 @@ import type {
 	StreamFn,
 	ToolExecutionMode,
 } from "./types.ts";
+import { DEFAULT_MAX_TOOL_CALLS_PER_TURN } from "./types.ts";
 
 export type { QueueMode } from "./types.ts";
 
@@ -113,6 +114,7 @@ export interface AgentOptions {
 	transport?: Transport;
 	maxRetryDelayMs?: number;
 	toolExecution?: ToolExecutionMode;
+	maxToolCallsPerTurn?: number;
 }
 
 class PendingMessageQueue {
@@ -199,6 +201,8 @@ export class Agent {
 	public maxRetryDelayMs?: number;
 	/** Tool execution strategy for assistant messages that contain multiple tool calls. */
 	public toolExecution: ToolExecutionMode;
+	/** Maximum number of tool calls allowed in a single assistant message; exceeding it rejects the batch and prompts the model to split. */
+	public maxToolCallsPerTurn: number;
 
 	constructor(options: AgentOptions = {}) {
 		this._state = createMutableAgentState(options.initialState);
@@ -218,6 +222,7 @@ export class Agent {
 		this.transport = options.transport ?? "auto";
 		this.maxRetryDelayMs = options.maxRetryDelayMs;
 		this.toolExecution = options.toolExecution ?? "parallel";
+		this.maxToolCallsPerTurn = options.maxToolCallsPerTurn ?? DEFAULT_MAX_TOOL_CALLS_PER_TURN;
 	}
 
 	/**
@@ -443,6 +448,7 @@ export class Agent {
 			thinkingBudgets: this.thinkingBudgets,
 			maxRetryDelayMs: this.maxRetryDelayMs,
 			toolExecution: this.toolExecution,
+			maxToolCallsPerTurn: this.maxToolCallsPerTurn,
 			beforeToolCall: this.beforeToolCall,
 			afterToolCall: this.afterToolCall,
 			prepareNextTurn: this.prepareNextTurn ? async () => await this.prepareNextTurn?.(this.signal) : undefined,

@@ -20,8 +20,8 @@ export function buildBaseOptions(_model: Model<Api>, options?: SimpleStreamOptio
 	};
 }
 
-export function clampReasoning(effort: ThinkingLevel | undefined): Exclude<ThinkingLevel, "xhigh"> | undefined {
-	return effort === "xhigh" ? "high" : effort;
+export function clampReasoning(effort: ThinkingLevel | undefined): ThinkingLevel | undefined {
+	return effort;
 }
 
 export function adjustMaxTokensForThinking(
@@ -36,6 +36,8 @@ export function adjustMaxTokensForThinking(
 		low: 2048,
 		medium: 8192,
 		high: 16384,
+		xhigh: 32768,
+		max: 65536,
 	};
 	const budgets = { ...defaultBudgets, ...customBudgets };
 

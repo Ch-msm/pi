@@ -395,7 +395,7 @@ function buildParams(
 	return params;
 }
 
-type ClampedThinkingLevel = Exclude<ThinkingLevel, "xhigh">;
+type ClampedThinkingLevel = ThinkingLevel;
 
 function isGemma4Model(model: Model<"google-generative-ai">): boolean {
 	return /gemma-?4/.test(model.id.toLowerCase());
@@ -435,6 +435,8 @@ function getThinkingLevel(effort: ClampedThinkingLevel, model: Model<"google-gen
 				return "LOW";
 			case "medium":
 			case "high":
+			case "xhigh":
+			case "max":
 				return "HIGH";
 		}
 	}
@@ -445,6 +447,8 @@ function getThinkingLevel(effort: ClampedThinkingLevel, model: Model<"google-gen
 				return "MINIMAL";
 			case "medium":
 			case "high":
+			case "xhigh":
+			case "max":
 				return "HIGH";
 		}
 	}
@@ -456,6 +460,8 @@ function getThinkingLevel(effort: ClampedThinkingLevel, model: Model<"google-gen
 		case "medium":
 			return "MEDIUM";
 		case "high":
+		case "xhigh":
+		case "max":
 			return "HIGH";
 	}
 }
@@ -475,6 +481,8 @@ function getGoogleBudget(
 			low: 2048,
 			medium: 8192,
 			high: 32768,
+			xhigh: 32768,
+			max: 32768,
 		};
 		return budgets[effort];
 	}
@@ -485,6 +493,8 @@ function getGoogleBudget(
 			low: 2048,
 			medium: 8192,
 			high: 24576,
+			xhigh: 24576,
+			max: 24576,
 		};
 		return budgets[effort];
 	}
@@ -495,6 +505,8 @@ function getGoogleBudget(
 			low: 2048,
 			medium: 8192,
 			high: 24576,
+			xhigh: 24576,
+			max: 24576,
 		};
 		return budgets[effort];
 	}

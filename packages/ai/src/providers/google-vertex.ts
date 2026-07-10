@@ -483,7 +483,7 @@ function buildParams(
 	return params;
 }
 
-type ClampedThinkingLevel = Exclude<PiThinkingLevel, "xhigh">;
+type ClampedThinkingLevel = PiThinkingLevel;
 
 function isGemini3ProModel(model: Model<"google-generative-ai">): boolean {
 	return /gemini-3(?:\.\d+)?-pro/.test(model.id.toLowerCase());
@@ -520,6 +520,8 @@ function getGemini3ThinkingLevel(
 				return "LOW";
 			case "medium":
 			case "high":
+			case "xhigh":
+			case "max":
 				return "HIGH";
 		}
 	}
@@ -531,6 +533,8 @@ function getGemini3ThinkingLevel(
 		case "medium":
 			return "MEDIUM";
 		case "high":
+		case "xhigh":
+		case "max":
 			return "HIGH";
 	}
 }
@@ -550,6 +554,8 @@ function getGoogleBudget(
 			low: 2048,
 			medium: 8192,
 			high: 32768,
+			xhigh: 32768,
+			max: 32768,
 		};
 		return budgets[effort];
 	}
@@ -560,6 +566,8 @@ function getGoogleBudget(
 			low: 2048,
 			medium: 8192,
 			high: 24576,
+			xhigh: 24576,
+			max: 24576,
 		};
 		return budgets[effort];
 	}

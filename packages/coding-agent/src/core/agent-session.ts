@@ -273,7 +273,7 @@ interface ToolDefinitionEntry {
 // ============================================================================
 
 /** Standard thinking levels */
-const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
+const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 // ============================================================================
 // AgentSession Class
@@ -1783,8 +1783,14 @@ export class AgentSession {
 	 * The provider will clamp to what the specific model supports internally.
 	 */
 	getAvailableThinkingLevels(): ThinkingLevel[] {
-		if (!this.model) return THINKING_LEVELS;
-		return getSupportedThinkingLevels(this.model) as ThinkingLevel[];
+		const levels = this.model ? (getSupportedThinkingLevels(this.model) as ThinkingLevel[]) : THINKING_LEVELS;
+
+		// Filter out minimal/low by default, unless the model only supports those
+		const hasHigherLevel = levels.some((l) => l !== "off" && l !== "minimal" && l !== "low");
+		if (hasHigherLevel) {
+			return levels.filter((l) => l !== "minimal" && l !== "low");
+		}
+		return levels;
 	}
 
 	/**

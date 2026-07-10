@@ -541,7 +541,7 @@ function mapThinkingLevelToEffort(
 	model: Model<"bedrock-converse-stream">,
 	level: SimpleStreamOptions["reasoning"],
 ): "low" | "medium" | "high" | "xhigh" | "max" {
-	if (level === "xhigh" && supportsNativeXhighEffort(model)) return "xhigh";
+	if ((level === "xhigh" && supportsNativeXhighEffort(model)) || level === "max") return level;
 
 	const mapped = level ? model.thinkingLevelMap?.[level] : undefined;
 	if (typeof mapped === "string") return mapped as "low" | "medium" | "high" | "xhigh" | "max";
@@ -966,12 +966,11 @@ function buildAdditionalModelRequestFields(
 						low: 2048,
 						medium: 8192,
 						high: 16384,
-						xhigh: 16384, // Claude doesn't support xhigh, clamp to high
+						xhigh: 32768,
+						max: 65536,
 					};
 
-					// Custom budgets override defaults (xhigh not in ThinkingBudgets, use high)
-					const level = options.reasoning === "xhigh" ? "high" : options.reasoning;
-					const budget = options.thinkingBudgets?.[level] ?? defaultBudgets[options.reasoning];
+					const budget = options.thinkingBudgets?.[options.reasoning] ?? defaultBudgets[options.reasoning];
 
 					return {
 						thinking: {

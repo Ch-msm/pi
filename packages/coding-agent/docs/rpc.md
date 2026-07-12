@@ -756,6 +756,7 @@ Events are streamed to stdout as JSON lines during agent operation. Events do NO
 | `tool_execution_start` | Tool begins execution |
 | `tool_execution_update` | Tool execution progress (streaming output) |
 | `tool_execution_end` | Tool completes |
+| `tool_call_limit` | A single assistant message exceeded the per-turn tool-call limit |
 | `queue_update` | Pending steering/follow-up queue changed |
 | `compaction_start` | Compaction begins |
 | `compaction_end` | Compaction completes |

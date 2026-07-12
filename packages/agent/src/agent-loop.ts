@@ -194,14 +194,24 @@ async function runLoop(
 			const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFn);
 			newMessages.push(message);
 
+			// Check for tool calls
+			const toolCalls = message.content.filter((c) => c.type === "toolCall");
+
+			// Warn when a single assistant message requests more tool calls than the
+			// per-turn limit. Emitted before the stopReason check so the warning shows
+			// even when the stream was truncated (stopReason "error") and the normal
+			// rejectToolCallsOverLimit path in executeToolCalls is never reached.
+			// Skip on abort: a user-initiated interrupt is not a limit violation.
+			const maxToolCallsPerTurn = config.maxToolCallsPerTurn ?? DEFAULT_MAX_TOOL_CALLS_PER_TURN;
+			if (maxToolCallsPerTurn > 0 && message.stopReason !== "aborted" && toolCalls.length > maxToolCallsPerTurn) {
+				await emit({ type: "tool_call_limit", count: toolCalls.length, limit: maxToolCallsPerTurn });
+			}
+
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
 				await emit({ type: "turn_end", message, toolResults: [] });
 				await emit({ type: "agent_end", messages: newMessages });
 				return;
 			}
-
-			// Check for tool calls
-			const toolCalls = message.content.filter((c) => c.type === "toolCall");
 
 			const toolResults: ToolResultMessage[] = [];
 			hasMoreToolCalls = false;

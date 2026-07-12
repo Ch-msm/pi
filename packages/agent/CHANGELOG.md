@@ -5,6 +5,7 @@
 ### Added
 
 - Added a per-turn tool-call limit (`maxToolCallsPerTurn`, default 10). When a single assistant message requests more tool calls than the limit, the loop rejects the batch without executing any of them and returns an error result per call, prompting the model to split work into smaller steps and wait for results before continuing.
+- Added `tool_call_limit` agent event emitted when a single assistant message exceeds the per-turn tool-call limit, so the UI can warn the user even when the response stream was truncated and the normal rejection path was not reached.
 
 ### Fixed
 

@@ -2939,6 +2939,10 @@ export class InteractiveMode {
 				break;
 			}
 
+			case "tool_call_limit":
+				this.showWarning(`Tool calls this turn (${event.count}) exceed the per-turn limit (${event.limit})`);
+				break;
+
 			case "agent_end":
 				this.clearStreamingRenderTimer();
 				if (this.settingsManager.getShowTerminalProgress()) {

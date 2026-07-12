@@ -434,4 +434,8 @@ export type AgentEvent =
 	// Tool execution lifecycle
 	| { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any }
 	| { type: "tool_execution_update"; toolCallId: string; toolName: string; args: any; partialResult: any }
-	| { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean };
+	| { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean }
+	// A single assistant message requested more tool calls than the per-turn limit.
+	// Emitted before tool execution (or instead of it when the response was truncated/error)
+	// so the UI can warn the user even when the normal rejection path is not reached.
+	| { type: "tool_call_limit"; count: number; limit: number };

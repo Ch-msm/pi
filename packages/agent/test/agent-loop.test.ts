@@ -1382,6 +1382,147 @@ describe("agentLoop with AgentMessage", () => {
 		expect(ends.length).toBe(3);
 		expect(ends.every((e) => (e as any).isError === false)).toBe(true);
 	});
+
+	it("should emit tool_call_limit when a truncated stream exceeds the per-turn limit", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const executed: string[] = [];
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				return {
+					content: [{ type: "text", text: `echoed: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [tool],
+		};
+
+		const userPrompt: AgentMessage = createUserMessage("echo many");
+
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			maxToolCallsPerTurn: 3,
+		};
+
+		// Simulate a truncated stream: 5 tool calls were parsed before the stream
+		// broke (stopReason "error"). The tool_call_limit warning must still fire
+		// because it is emitted before the stopReason check.
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				const content = Array.from({ length: 5 }, (_, i) => ({
+					type: "toolCall" as const,
+					id: `tool-${i + 1}`,
+					name: "echo",
+					arguments: { value: `v${i + 1}` },
+				}));
+				const message = createAssistantMessage(content, "error");
+				stream.push({ type: "error", reason: "error", error: message });
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		// tool_call_limit must be emitted even on a truncated stream
+		const limitEvents = events.filter((e) => e.type === "tool_call_limit");
+		expect(limitEvents.length).toBe(1);
+		expect((limitEvents[0] as any).count).toBe(5);
+		expect((limitEvents[0] as any).limit).toBe(3);
+
+		// The warning must come before turn_end so it is visible even when the
+		// normal rejectToolCallsOverLimit path is never reached
+		const limitIdx = events.findIndex((e) => e.type === "tool_call_limit");
+		const turnEndIdx = events.findIndex((e) => e.type === "turn_end");
+		expect(limitIdx).toBeLessThan(turnEndIdx);
+
+		// No tools should be executed when the stream errored
+		const starts = events.filter((e) => e.type === "tool_execution_start");
+		expect(starts.length).toBe(0);
+		expect(executed).toEqual([]);
+
+		// The loop should terminate after the error
+		expect(events.some((e) => e.type === "agent_end")).toBe(true);
+	});
+
+	it("should not emit tool_call_limit on a user-initiated abort", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, _params) {
+				return {
+					content: [{ type: "text", text: "echoed" }],
+					details: { value: "" },
+				};
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [tool],
+		};
+
+		const userPrompt: AgentMessage = createUserMessage("echo many");
+
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			maxToolCallsPerTurn: 3,
+		};
+
+		// Simulate a user-initiated abort mid-stream: 5 tool calls were parsed but
+		// the user interrupted, so stopReason is "aborted". The limit warning must
+		// NOT fire — an intentional interrupt is not a limit violation.
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				const content = Array.from({ length: 5 }, (_, i) => ({
+					type: "toolCall" as const,
+					id: `tool-${i + 1}`,
+					name: "echo",
+					arguments: { value: `v${i + 1}` },
+				}));
+				const message = createAssistantMessage(content, "aborted");
+				stream.push({ type: "error", reason: "aborted", error: message });
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		// tool_call_limit must NOT be emitted on abort
+		const limitEvents = events.filter((e) => e.type === "tool_call_limit");
+		expect(limitEvents.length).toBe(0);
+
+		// No tools should be executed
+		const starts = events.filter((e) => e.type === "tool_execution_start");
+		expect(starts.length).toBe(0);
+
+		// The loop should still terminate
+		expect(events.some((e) => e.type === "agent_end")).toBe(true);
+	});
 });
 
 describe("agentLoopContinue with AgentMessage", () => {

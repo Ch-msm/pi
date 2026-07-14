@@ -9,7 +9,7 @@ import {
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { agentLoop, agentLoopContinue } from "../src/agent-loop.ts";
-import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool } from "../src/types.ts";
+import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, StreamFn } from "../src/types.ts";
 
 // Mock stream for testing - mimics MockAssistantStream
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -78,6 +78,12 @@ function createUserMessage(text: string): UserMessage {
 // Simple identity converter for tests - just passes through standard messages
 function identityConverter(messages: AgentMessage[]): Message[] {
 	return messages.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "toolResult") as Message[];
+}
+
+type AssistantMessageEndEvent = Extract<AgentEvent, { type: "message_end" }> & { message: AssistantMessage };
+
+function isAssistantMessageEndEvent(event: AgentEvent): event is AssistantMessageEndEvent {
+	return event.type === "message_end" && event.message.role === "assistant";
 }
 
 describe("agentLoop with AgentMessage", () => {
@@ -1642,5 +1648,419 @@ describe("agentLoopContinue with AgentMessage", () => {
 		const messages = await stream.result();
 		expect(messages.length).toBe(1);
 		expect(messages[0].role).toBe("assistant");
+	});
+});
+
+describe("streaming tool-call limits", () => {
+	it("should abort the stream early when tool calls exceed the per-turn limit during streaming", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const executed: string[] = [];
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				return {
+					content: [{ type: "text", text: `echoed: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [tool],
+		};
+
+		const userPrompt: AgentMessage = createUserMessage("echo many");
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			maxToolCallsPerTurn: 3,
+		};
+
+		// First call streams many tool calls into a shared content array (real providers
+		// push on toolcall_start and keep mutating until the HTTP stream aborts). The
+		// agent must early-exit at limit+1, freeze a snapshot, and stay isolated from
+		// later provider mutations. Second call ends normally.
+		const TOTAL = 8;
+		let callIndex = 0;
+		let providerContent: AssistantMessage["content"] | undefined;
+		const yieldTick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+		const streamFn: StreamFn = (_model, _context, options) => {
+			// Capture and advance synchronously: the first provider may still be mutating
+			// its shared content after early-exit while the agent already starts the next turn.
+			const thisCall = callIndex++;
+			const stream = new MockAssistantStream();
+			void (async () => {
+				if (thisCall === 0) {
+					const partial = createAssistantMessage([]);
+					providerContent = partial.content;
+					stream.push({ type: "start", partial });
+					await yieldTick();
+
+					for (let i = 0; i < TOTAL; i++) {
+						const newBlock = {
+							type: "toolCall" as const,
+							id: `tool-${i + 1}`,
+							name: "echo",
+							arguments: {} as Record<string, unknown>,
+							partialJson: "",
+							streamIndex: i,
+						};
+						// Always mutate shared provider content first, as real streams do.
+						// Even after the agent aborts, later chunks may still land in this array.
+						partial.content.push(newBlock as AssistantMessage["content"][number]);
+
+						const aborted = options?.signal?.aborted === true;
+						if (!aborted) {
+							stream.push({ type: "toolcall_start", contentIndex: i, partial });
+							// Give the agent a turn to process this start (and early-exit).
+							await yieldTick();
+						}
+
+						newBlock.partialJson = `{"value":"v${i + 1}"}`;
+						newBlock.arguments = { value: `v${i + 1}` };
+						if (!options?.signal?.aborted) {
+							stream.push({
+								type: "toolcall_delta",
+								contentIndex: i,
+								delta: newBlock.partialJson,
+								partial,
+							});
+							await yieldTick();
+						}
+
+						delete (newBlock as { partialJson?: string }).partialJson;
+						delete (newBlock as { streamIndex?: number }).streamIndex;
+						if (!options?.signal?.aborted) {
+							stream.push({
+								type: "toolcall_end",
+								contentIndex: i,
+								toolCall: newBlock as AssistantMessage["content"][number] & {
+									type: "toolCall";
+									id: string;
+									name: string;
+									arguments: Record<string, unknown>;
+								},
+								partial,
+							});
+							await yieldTick();
+						}
+					}
+
+					if (!options?.signal?.aborted) {
+						stream.push({
+							type: "done",
+							reason: "toolUse",
+							message: createAssistantMessage(partial.content, "toolUse"),
+						});
+					} else {
+						// Provider eventually settles after abort; agent already returned its snapshot.
+						stream.push({
+							type: "error",
+							reason: "aborted",
+							error: {
+								...createAssistantMessage(partial.content, "aborted"),
+								errorMessage: "Request was aborted",
+							},
+						});
+					}
+				} else {
+					stream.push({
+						type: "done",
+						reason: "stop",
+						message: createAssistantMessage([{ type: "text", text: "done" }]),
+					});
+				}
+			})();
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		// No tool should have been executed (over-limit batch is rejected)
+		expect(executed).toEqual([]);
+
+		// Every emitted update must remain an event-time snapshot. The provider keeps
+		// mutating its own content after abort, but old listener events must not inflate.
+		const toolCallStartEvents = events.filter(
+			(event): event is Extract<AgentEvent, { type: "message_update" }> =>
+				event.type === "message_update" && event.assistantMessageEvent.type === "toolcall_start",
+		);
+		const messageToolCallCounts = toolCallStartEvents.flatMap((event) =>
+			event.message.role === "assistant"
+				? [event.message.content.filter((content) => content.type === "toolCall").length]
+				: [],
+		);
+		const partialToolCallCounts = toolCallStartEvents.flatMap((event) => {
+			if (event.assistantMessageEvent.type !== "toolcall_start") return [];
+			return [event.assistantMessageEvent.partial.content.filter((content) => content.type === "toolCall").length];
+		});
+		expect(messageToolCallCounts).toEqual([1, 2, 3, 4]);
+		expect(partialToolCallCounts).toEqual([1, 2, 3, 4]);
+
+		// tool_call_limit fired once with count = limit+1 (what we accumulated before aborting)
+		const limitEvents = events.filter(
+			(event): event is Extract<AgentEvent, { type: "tool_call_limit" }> => event.type === "tool_call_limit",
+		);
+		expect(limitEvents.length).toBe(1);
+		expect(limitEvents[0].count).toBe(config.maxToolCallsPerTurn! + 1);
+		expect(limitEvents[0].limit).toBe(config.maxToolCallsPerTurn);
+
+		// Over-limit batch rejected: limit+1 error tool results, none executed.
+		// Even if the provider later pushed more toolCalls into its shared content array,
+		// the frozen early-exit snapshot must keep reject path at limit+1.
+		const ends = events.filter(
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> => event.type === "tool_execution_end",
+		);
+		expect(ends.length).toBe(config.maxToolCallsPerTurn! + 1);
+		expect(ends.every((e) => e.isError === true)).toBe(true);
+
+		const assistantEnds = events.filter(isAssistantMessageEndEvent);
+		const overLimitAssistant = assistantEnds.find((event) => event.message.stopReason === "toolUse");
+		expect(overLimitAssistant).toBeDefined();
+		if (!overLimitAssistant) throw new Error("Expected an over-limit assistant message");
+		const frozenToolCalls = overLimitAssistant.message.content.filter((content) => content.type === "toolCall");
+		expect(frozenToolCalls.length).toBe(config.maxToolCallsPerTurn! + 1);
+		// Scratch streaming fields must not be persisted on the frozen snapshot.
+		expect(frozenToolCalls.every((content) => !("partialJson" in content) && !("streamIndex" in content))).toBe(true);
+		// Snapshot isolation: later mutations of the shared provider content array must
+		// not change the frozen message used by reject/persist paths.
+		expect(providerContent).toBeDefined();
+		providerContent!.push({
+			type: "toolCall",
+			id: "tool-late",
+			name: "echo",
+			arguments: { value: "late" },
+		});
+		expect(overLimitAssistant.message.content.filter((content) => content.type === "toolCall").length).toBe(
+			config.maxToolCallsPerTurn! + 1,
+		);
+		expect(providerContent!.filter((c) => c.type === "toolCall").length).toBeGreaterThan(frozenToolCalls.length);
+
+		// Model re-plans after the errors and ends normally
+		const finalText = assistantEnds.find((event) => event.message.content.some((content) => content.type === "text"));
+		expect(finalText).toBeDefined();
+	});
+
+	it("should hard-cap a burst over-limit stream and snapshot before abort listeners", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const executed: string[] = [];
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				return {
+					content: [{ type: "text", text: `echoed: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [tool],
+		};
+
+		const userPrompt: AgentMessage = createUserMessage("echo burst");
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			maxToolCallsPerTurn: 3,
+		};
+
+		// Burst case: one chunk pushes many toolCall starts into the shared content array
+		// before the agent can interleave. Snapshot must hard-cap at limit+1 and freeze usage.
+		let callIndex = 0;
+		let providerUsage: AssistantMessage["usage"] | undefined;
+		const streamFn: StreamFn = (_model, _context, options) => {
+			const thisCall = callIndex++;
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (thisCall === 0) {
+					const partial = createAssistantMessage([]);
+					providerUsage = partial.usage;
+					options?.signal?.addEventListener(
+						"abort",
+						() => {
+							partial.usage.output = 77;
+							partial.usage.totalTokens = 77;
+							partial.usage.cost.total = 2.5;
+							const firstToolCall = partial.content.find((content) => content.type === "toolCall");
+							if (firstToolCall) {
+								firstToolCall.arguments.value = "mutated-on-abort";
+							}
+						},
+						{ once: true },
+					);
+					stream.push({ type: "start", partial });
+					for (let i = 0; i < 8; i++) {
+						partial.content.push({
+							type: "toolCall",
+							id: `tool-${i + 1}`,
+							name: "echo",
+							arguments: { value: `v${i + 1}` },
+						});
+						stream.push({ type: "toolcall_start", contentIndex: i, partial });
+					}
+					// Leave the stream open; agent early-exits without waiting for done/error.
+				} else {
+					stream.push({
+						type: "done",
+						reason: "stop",
+						message: createAssistantMessage([{ type: "text", text: "done" }]),
+					});
+				}
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		expect(executed).toEqual([]);
+
+		const overLimitAssistant = events
+			.filter(isAssistantMessageEndEvent)
+			.find((event) => event.message.stopReason === "toolUse");
+		expect(overLimitAssistant).toBeDefined();
+		if (!overLimitAssistant) throw new Error("Expected an over-limit assistant message");
+		const frozenToolCalls = overLimitAssistant.message.content.filter((content) => content.type === "toolCall");
+		expect(frozenToolCalls.length).toBe(config.maxToolCallsPerTurn! + 1);
+		expect(frozenToolCalls.map((content) => content.id)).toEqual(["tool-1", "tool-2", "tool-3", "tool-4"]);
+		expect(frozenToolCalls[0].arguments).toEqual({ value: "v1" });
+
+		// Streaming listeners must never observe the provider's full burst.
+		const streamingToolCallCounts = events.flatMap((event) => {
+			if (
+				(event.type !== "message_start" && event.type !== "message_update") ||
+				event.message.role !== "assistant"
+			) {
+				return [];
+			}
+			return [event.message.content.filter((content) => content.type === "toolCall").length];
+		});
+		expect(streamingToolCallCounts).toContain(config.maxToolCallsPerTurn! + 1);
+		expect(streamingToolCallCounts.every((count) => count <= config.maxToolCallsPerTurn! + 1)).toBe(true);
+
+		// Snapshot happens before abort listeners and stays isolated from later mutations.
+		expect(providerUsage).toBeDefined();
+		expect(providerUsage!.output).toBe(77);
+		expect(providerUsage!.cost.total).toBe(2.5);
+		expect(overLimitAssistant.message.usage.output).toBe(0);
+		expect(overLimitAssistant.message.usage.cost.total).toBe(0);
+		providerUsage!.output = 123;
+		providerUsage!.totalTokens = 123;
+		providerUsage!.cost.total = 4.5;
+		expect(overLimitAssistant.message.usage.output).toBe(0);
+		expect(overLimitAssistant.message.usage.cost.total).toBe(0);
+		expect(providerUsage?.output).toBe(123);
+		expect(providerUsage?.cost.total).toBe(4.5);
+
+		const ends = events.filter(
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> => event.type === "tool_execution_end",
+		);
+		expect(ends.length).toBe(config.maxToolCallsPerTurn! + 1);
+		expect(ends.every((e) => e.isError === true)).toBe(true);
+	});
+
+	it("should not reclassify a user abort as an over-limit toolUse retry", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const executed: string[] = [];
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				return {
+					content: [{ type: "text", text: `echoed: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [tool],
+		};
+
+		const userPrompt: AgentMessage = createUserMessage("echo many");
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			maxToolCallsPerTurn: 3,
+		};
+
+		const abortController = new AbortController();
+		const yieldTick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+		const streamFn: StreamFn = (_model, _context, options) => {
+			const stream = new MockAssistantStream();
+			void (async () => {
+				const partial = createAssistantMessage([]);
+				stream.push({ type: "start", partial });
+				await yieldTick();
+
+				// Stream past the limit, then the user aborts before agent early-exits.
+				for (let i = 0; i < 5; i++) {
+					partial.content.push({
+						type: "toolCall",
+						id: `tool-${i + 1}`,
+						name: "echo",
+						arguments: { value: `v${i + 1}` },
+					});
+					stream.push({ type: "toolcall_start", contentIndex: i, partial });
+					if (i === 3) {
+						abortController.abort();
+					}
+					await yieldTick();
+					if (options?.signal?.aborted) {
+						stream.push({
+							type: "error",
+							reason: "aborted",
+							error: {
+								...createAssistantMessage(partial.content, "aborted"),
+								errorMessage: "Request was aborted",
+							},
+						});
+						return;
+					}
+				}
+			})();
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([userPrompt], context, config, abortController.signal, streamFn);
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		expect(executed).toEqual([]);
+
+		// User abort must win: no over-limit retry path.
+		expect(events.filter((e) => e.type === "tool_call_limit")).toEqual([]);
+		expect(events.filter((e) => e.type === "tool_execution_end")).toEqual([]);
+
+		const assistantEnds = events.filter(isAssistantMessageEndEvent);
+		expect(assistantEnds.length).toBe(1);
+		expect(assistantEnds[0].message.stopReason).toBe("aborted");
 	});
 });

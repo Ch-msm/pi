@@ -153,7 +153,7 @@ export class OutputAccumulator {
 		for (let i = 0; i < input.length; i++) {
 			const ch = input[i];
 			if (ch === "\n") {
-				head += buffer + "\n";
+				head += `${buffer}\n`;
 				buffer = "";
 			} else if (ch === "\r") {
 				buffer = "";

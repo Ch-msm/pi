@@ -5,6 +5,7 @@
 
 import {
 	type AssistantMessage,
+	type AssistantMessageEvent,
 	type Context,
 	EventStream,
 	streamSimple,
@@ -24,6 +25,8 @@ import type {
 import { DEFAULT_MAX_TOOL_CALLS_PER_TURN } from "./types.ts";
 
 export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
+
+type AssistantMessageUpdateEvent = Exclude<AssistantMessageEvent, { type: "start" | "done" | "error" }>;
 
 /**
  * Start an agent loop with a new prompt message.
@@ -312,14 +315,71 @@ async function streamAssistantResponse(
 	const resolvedApiKey =
 		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
 
+	// Per-turn tool-call limit. When the streamed assistant message accumulates more
+	// tool calls than the limit, abort the stream early (before the rest of the tool
+	// calls are generated) and return a frozen snapshot with stopReason "toolUse".
+	// runLoop then sees the over-limit batch and rejects it via rejectToolCallsOverLimit,
+	// prompting the model to split into smaller steps. Without this, the model can
+	// stream dozens of tool calls that all sit in pending state until the whole
+	// message finishes, because tool execution only starts after the stream ends.
+	//
+	// Real providers push toolCall blocks into a shared content array on toolcall_start
+	// and keep mutating that array until the underlying HTTP stream aborts. The early
+	// exit therefore must snapshot content (and strip streaming scratch fields) so
+	// later provider mutations cannot inflate the message that reject/persist paths see.
+	const maxToolCallsPerTurn = config.maxToolCallsPerTurn ?? DEFAULT_MAX_TOOL_CALLS_PER_TURN;
+	const overLimitAbort = maxToolCallsPerTurn > 0 ? new AbortController() : undefined;
+	const combinedSignal =
+		overLimitAbort && signal ? AbortSignal.any([signal, overLimitAbort.signal]) : (overLimitAbort?.signal ?? signal);
+
 	const response = await streamFunction(config.model, llmContext, {
 		...config,
 		apiKey: resolvedApiKey,
-		signal,
+		signal: combinedSignal,
 	});
 
 	let partialMessage: AssistantMessage | null = null;
 	let addedPartial = false;
+	let emittedMessageStart = false;
+
+	const isOverToolCallLimit = (): boolean =>
+		!signal?.aborted &&
+		maxToolCallsPerTurn > 0 &&
+		partialMessage !== null &&
+		partialMessage.content.filter((content) => content.type === "toolCall").length > maxToolCallsPerTurn;
+
+	const finishOverToolCallLimit = async (
+		assistantMessageEvent?: AssistantMessageUpdateEvent,
+	): Promise<AssistantMessage> => {
+		if (!partialMessage) {
+			throw new Error("Cannot finish an over-limit stream without a partial assistant message");
+		}
+
+		// Freeze before aborting: AbortSignal listeners run synchronously and may mutate
+		// provider-owned partial state while handling the abort.
+		const finalMessage = snapshotOverLimitAssistantMessage(partialMessage, maxToolCallsPerTurn);
+		if (addedPartial) {
+			context.messages[context.messages.length - 1] = finalMessage;
+		} else {
+			context.messages.push(finalMessage);
+		}
+		overLimitAbort?.abort();
+
+		if (!emittedMessageStart) {
+			emittedMessageStart = true;
+			await emit({ type: "message_start", message: cloneAssistantMessage(finalMessage) });
+		} else if (assistantMessageEvent) {
+			const message = cloneAssistantMessage(finalMessage);
+			await emit({
+				type: "message_update",
+				assistantMessageEvent: cloneAssistantMessageUpdateEvent(assistantMessageEvent, message),
+				message,
+			});
+		}
+
+		await emit({ type: "message_end", message: finalMessage });
+		return finalMessage;
+	};
 
 	for await (const event of response) {
 		switch (event.type) {
@@ -327,7 +387,17 @@ async function streamAssistantResponse(
 				partialMessage = event.partial;
 				context.messages.push(partialMessage);
 				addedPartial = true;
-				await emit({ type: "message_start", message: { ...partialMessage } });
+				if (isOverToolCallLimit()) {
+					return finishOverToolCallLimit();
+				}
+				emittedMessageStart = true;
+				await emit({ type: "message_start", message: cloneAssistantMessage(partialMessage) });
+				// The provider runs independently while listeners are awaited. Re-check the
+				// shared partial immediately after listener settlement so a burst that arrived
+				// during message_start is still aborted before another event is delivered.
+				if (isOverToolCallLimit()) {
+					return finishOverToolCallLimit();
+				}
 				break;
 
 			case "text_start":
@@ -342,11 +412,18 @@ async function streamAssistantResponse(
 				if (partialMessage) {
 					partialMessage = event.partial;
 					context.messages[context.messages.length - 1] = partialMessage;
+					if (isOverToolCallLimit()) {
+						return finishOverToolCallLimit(event);
+					}
+					const message = cloneAssistantMessage(partialMessage);
 					await emit({
 						type: "message_update",
-						assistantMessageEvent: event,
-						message: { ...partialMessage },
+						assistantMessageEvent: cloneAssistantMessageUpdateEvent(event, message),
+						message,
 					});
+					if (isOverToolCallLimit()) {
+						return finishOverToolCallLimit();
+					}
 				}
 				break;
 
@@ -359,7 +436,7 @@ async function streamAssistantResponse(
 					context.messages.push(finalMessage);
 				}
 				if (!addedPartial) {
-					await emit({ type: "message_start", message: { ...finalMessage } });
+					await emit({ type: "message_start", message: cloneAssistantMessage(finalMessage) });
 				}
 				await emit({ type: "message_end", message: finalMessage });
 				return finalMessage;
@@ -372,10 +449,101 @@ async function streamAssistantResponse(
 		context.messages[context.messages.length - 1] = finalMessage;
 	} else {
 		context.messages.push(finalMessage);
-		await emit({ type: "message_start", message: { ...finalMessage } });
+		await emit({ type: "message_start", message: cloneAssistantMessage(finalMessage) });
 	}
 	await emit({ type: "message_end", message: finalMessage });
 	return finalMessage;
+}
+
+/**
+ * Streaming providers keep mutating a shared AssistantMessage until the HTTP stream
+ * actually aborts. Copy content/usage and drop provider scratch fields so the
+ * over-limit reject/persist paths see a frozen message.
+ *
+ * Hard-cap toolCall blocks at limit+1: a single provider chunk can push many new
+ * tool calls into the shared content array before the agent processes the first
+ * event. Without the cap, early-exit would still freeze a large over-limit batch.
+ */
+function snapshotOverLimitAssistantMessage(
+	partialMessage: AssistantMessage,
+	maxToolCallsPerTurn: number,
+): AssistantMessage {
+	const snapshot = cloneAssistantMessage(partialMessage);
+	const maxToolCallsToKeep = maxToolCallsPerTurn + 1;
+	let keptToolCalls = 0;
+	const content: AssistantMessage["content"] = [];
+	for (const block of snapshot.content) {
+		if (block.type === "toolCall") {
+			if (keptToolCalls >= maxToolCallsToKeep) {
+				continue;
+			}
+			keptToolCalls++;
+		}
+		content.push(block);
+	}
+	return {
+		...snapshot,
+		stopReason: "toolUse",
+		content,
+	};
+}
+
+function cloneAssistantMessage(message: AssistantMessage): AssistantMessage {
+	return {
+		...message,
+		content: message.content.map(cloneAssistantContentBlock),
+		usage: cloneAssistantUsage(message.usage),
+		...(message.diagnostics ? { diagnostics: structuredClone(message.diagnostics) } : {}),
+	};
+}
+
+function cloneAssistantUsage(usage: AssistantMessage["usage"]): AssistantMessage["usage"] {
+	return {
+		...usage,
+		cost: { ...usage.cost },
+	};
+}
+
+function cloneAssistantToolCall(block: AgentToolCall): AgentToolCall {
+	const {
+		partialJson: _partialJson,
+		partialArgs: _partialArgs,
+		index: _index,
+		streamIndex: _streamIndex,
+		arguments: args,
+		...toolCall
+	} = block as AgentToolCall & {
+		partialJson?: string;
+		partialArgs?: string;
+		index?: number;
+		streamIndex?: number;
+	};
+	return {
+		...toolCall,
+		arguments: structuredClone(args),
+	};
+}
+
+function cloneAssistantContentBlock(block: AssistantMessage["content"][number]): AssistantMessage["content"][number] {
+	if (block.type === "toolCall") {
+		return cloneAssistantToolCall(block);
+	}
+	const { index: _index, ...contentBlock } = block as typeof block & { index?: number };
+	return contentBlock;
+}
+
+function cloneAssistantMessageUpdateEvent(
+	event: AssistantMessageUpdateEvent,
+	partial: AssistantMessage,
+): AssistantMessageUpdateEvent {
+	if (event.type === "toolcall_end") {
+		return {
+			...event,
+			toolCall: cloneAssistantToolCall(event.toolCall),
+			partial,
+		};
+	}
+	return { ...event, partial };
 }
 
 /**

@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Fixed streamed over-limit tool-call batches to freeze listener event snapshots against provider mutations, abort before emitting an already-over-limit update, and cap burst content at `limit + 1` calls.
 - Fixed the compaction summarization system prompt to use neutral AI assistant wording for non-coding agents ([#5401](https://github.com/earendil-works/pi/issues/5401)).
 
 ## [0.78.1] - 2026-06-04

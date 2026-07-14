@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- Fixed finalized assistant messages to remove stale streaming tool components that have no corresponding final tool call.
 - Fixed invalid `models.json` syntax to skip startup config migrations and report the normal file-path-aware models error instead of a raw JSON parse stack trace ([#5418](https://github.com/earendil-works/pi/issues/5418)).
 
 - Fixed the compaction summarization system prompt to use neutral AI assistant wording for non-coding agents ([#5401](https://github.com/earendil-works/pi/issues/5401)).

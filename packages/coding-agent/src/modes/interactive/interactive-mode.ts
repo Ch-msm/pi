@@ -2755,6 +2755,17 @@ export class InteractiveMode {
 		}
 	}
 
+	private prunePendingToolCallsToMessage(message: AssistantMessage): void {
+		const finalToolCallIds = new Set(
+			message.content.filter((content) => content.type === "toolCall").map((content) => content.id),
+		);
+		for (const [toolCallId, component] of this.pendingTools) {
+			if (finalToolCallIds.has(toolCallId)) continue;
+			this.chatContainer.removeChild(component);
+			this.pendingTools.delete(toolCallId);
+		}
+	}
+
 	private renderStreamingAssistantMessage(): void {
 		if (!this.streamingComponent || !this.streamingMessage) return;
 		this.streamingComponent.updateContent(this.streamingMessage);
@@ -2884,6 +2895,7 @@ export class InteractiveMode {
 						}
 						this.pendingTools.clear();
 					} else {
+						this.prunePendingToolCallsToMessage(this.streamingMessage);
 						// Args are now complete - trigger diff computation for edit tools
 						for (const [, component] of this.pendingTools.entries()) {
 							component.setArgsComplete();

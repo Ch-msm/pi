@@ -532,30 +532,20 @@ function supportsAdaptiveThinking(modelId: string, modelName?: string): boolean 
 	);
 }
 
-function supportsNativeXhighEffort(model: Model<"bedrock-converse-stream">): boolean {
-	const candidates = getModelMatchCandidates(model.id, model.name);
-	return candidates.some((s) => s.includes("opus-4-7") || s.includes("opus-4-8"));
-}
-
 function mapThinkingLevelToEffort(
-	model: Model<"bedrock-converse-stream">,
 	level: SimpleStreamOptions["reasoning"],
 ): "low" | "medium" | "high" | "xhigh" | "max" {
-	if ((level === "xhigh" && supportsNativeXhighEffort(model)) || level === "max") return level;
-
-	const mapped = level ? model.thinkingLevelMap?.[level] : undefined;
-	if (typeof mapped === "string") return mapped as "low" | "medium" | "high" | "xhigh" | "max";
-
 	switch (level) {
 		case "minimal":
-		case "low":
 			return "low";
+		case "low":
 		case "medium":
-			return "medium";
 		case "high":
-			return "high";
+		case "xhigh":
+		case "max":
+			return level;
 		default:
-			return "high";
+			throw new Error(`Unsupported Bedrock Claude adaptive thinking level: ${String(level)}`);
 	}
 }
 
@@ -958,7 +948,7 @@ function buildAdditionalModelRequestFields(
 		const result: Record<string, any> = supportsAdaptiveThinking(model.id, model.name)
 			? {
 					thinking: { type: "adaptive", ...(display !== undefined ? { display } : {}) },
-					output_config: { effort: mapThinkingLevelToEffort(model, options.reasoning) },
+					output_config: { effort: mapThinkingLevelToEffort(options.reasoning) },
 				}
 			: (() => {
 					const defaultBudgets: Record<ThinkingLevel, number> = {

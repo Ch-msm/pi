@@ -284,17 +284,8 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.id.endsWith("gpt-5.5-pro")) {
 		mergeThinkingLevelMap(model, { off: null, minimal: null, low: null });
 	}
-	if (model.id.includes("opus-4-6") || model.id.includes("opus-4.6")) {
-		mergeThinkingLevelMap(model, { xhigh: "max" });
-	}
-	if (
-		model.id.includes("opus-4-7") ||
-		model.id.includes("opus-4.7") ||
-		model.id.includes("opus-4-8") ||
-		model.id.includes("opus-4.8")
-	) {
-		mergeThinkingLevelMap(model, { xhigh: "xhigh" });
-	}
+	// Claude adaptive models pass thinking levels through as-is (low/medium/high/xhigh/max).
+	// Do not invent xhigh->max remaps; the selected UI level is the API effort value.
 	if (model.api === "anthropic-messages" && isAnthropicAdaptiveThinkingModel(model.id)) {
 		mergeAnthropicMessagesCompat(model, { forceAdaptiveThinking: true });
 	}

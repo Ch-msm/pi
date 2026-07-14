@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Claude adaptive thinking levels now pass through as API effort values without `thinkingLevelMap` remapping or silent high fallback (`max`/`xhigh` stay `max`/`xhigh`).
+
 ### Fixed
 
 - Fixed Azure OpenAI Responses requests to disable server-side response storage ([#5530](https://github.com/earendil-works/pi/issues/5530)).

@@ -710,26 +710,22 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 };
 
 /**
- * Map ThinkingLevel to Anthropic effort levels for adaptive thinking.
- * Note: effort "max" is only valid on Opus 4.6, while Opus 4.7 supports "xhigh".
+ * Pass Claude adaptive thinking levels through as Anthropic effort values.
+ * No thinkingLevelMap remapping and no silent high fallback: the selected level
+ * is the value sent to the API.
  */
-function mapThinkingLevelToEffort(
-	model: Model<"anthropic-messages">,
-	level: SimpleStreamOptions["reasoning"],
-): AnthropicEffort {
-	const mapped = level ? model.thinkingLevelMap?.[level] : undefined;
-	if (typeof mapped === "string") return mapped as AnthropicEffort;
-
+function mapThinkingLevelToEffort(level: SimpleStreamOptions["reasoning"]): AnthropicEffort {
 	switch (level) {
 		case "minimal":
-		case "low":
 			return "low";
+		case "low":
 		case "medium":
-			return "medium";
 		case "high":
-			return "high";
+		case "xhigh":
+		case "max":
+			return level;
 		default:
-			return "high";
+			throw new Error(`Unsupported Anthropic adaptive thinking level: ${String(level)}`);
 	}
 }
 
@@ -751,7 +747,7 @@ export const streamSimpleAnthropic: StreamFunction<"anthropic-messages", SimpleS
 	// For models with adaptive thinking: use an effort level.
 	// For older models: use budget-based thinking.
 	if (model.compat?.forceAdaptiveThinking === true) {
-		const effort = mapThinkingLevelToEffort(model, options.reasoning);
+		const effort = mapThinkingLevelToEffort(options.reasoning);
 		return streamAnthropic(model, context, {
 			...base,
 			thinkingEnabled: true,
@@ -956,13 +952,10 @@ function buildParams(
 				// Adaptive thinking: Claude decides when and how much to think.
 				params.thinking = { type: "adaptive", display };
 				if (options.effort) {
-					// The Anthropic SDK types can lag newly supported effort values such as "xhigh".
-					params.output_config =
-						options.effort === "xhigh"
-							? ({ effort: options.effort } as unknown as NonNullable<
-									MessageCreateParamsStreaming["output_config"]
-								>)
-							: { effort: options.effort };
+					// The Anthropic SDK types can lag newly supported effort values such as "xhigh"/"max".
+					params.output_config = { effort: options.effort } as unknown as NonNullable<
+						MessageCreateParamsStreaming["output_config"]
+					>;
 				}
 			} else {
 				// Budget-based thinking for older models

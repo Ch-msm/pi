@@ -411,6 +411,18 @@ async function streamAssistantResponse(
 			case "thinking_start":
 			case "thinking_delta":
 			case "thinking_end":
+				if (partialMessage) {
+					partialMessage = event.partial;
+					context.messages[context.messages.length - 1] = partialMessage;
+					const message = cloneAssistantMessage(partialMessage);
+					await emit({
+						type: "message_update",
+						assistantMessageEvent: cloneAssistantMessageUpdateEvent(event, message),
+						message,
+					});
+				}
+				break;
+
 			case "toolcall_start":
 				if (partialMessage) {
 					toolCallsSeenCount++;

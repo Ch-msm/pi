@@ -341,12 +341,10 @@ async function streamAssistantResponse(
 	let partialMessage: AssistantMessage | null = null;
 	let addedPartial = false;
 	let emittedMessageStart = false;
+	let toolCallsSeenCount = 0;
 
 	const isOverToolCallLimit = (): boolean =>
-		!signal?.aborted &&
-		maxToolCallsPerTurn > 0 &&
-		partialMessage !== null &&
-		partialMessage.content.filter((content) => content.type === "toolCall").length > maxToolCallsPerTurn;
+		!signal?.aborted && maxToolCallsPerTurn > 0 && toolCallsSeenCount > maxToolCallsPerTurn;
 
 	const finishOverToolCallLimit = async (
 		assistantMessageEvent?: AssistantMessageUpdateEvent,
@@ -383,10 +381,12 @@ async function streamAssistantResponse(
 
 	for await (const event of response) {
 		switch (event.type) {
-			case "start":
+			case "start": {
 				partialMessage = event.partial;
 				context.messages.push(partialMessage);
 				addedPartial = true;
+				// Sync counter with any toolCalls already in the start event
+				toolCallsSeenCount = partialMessage.content.filter((c) => c.type === "toolCall").length;
 				if (isOverToolCallLimit()) {
 					return finishOverToolCallLimit();
 				}
@@ -395,10 +395,15 @@ async function streamAssistantResponse(
 				// The provider runs independently while listeners are awaited. Re-check the
 				// shared partial immediately after listener settlement so a burst that arrived
 				// during message_start is still aborted before another event is delivered.
-				if (isOverToolCallLimit()) {
-					return finishOverToolCallLimit();
+				const newCount = partialMessage.content.filter((c) => c.type === "toolCall").length;
+				if (newCount > toolCallsSeenCount) {
+					toolCallsSeenCount = newCount;
+					if (isOverToolCallLimit()) {
+						return finishOverToolCallLimit();
+					}
 				}
 				break;
+			}
 
 			case "text_start":
 			case "text_delta":
@@ -407,9 +412,8 @@ async function streamAssistantResponse(
 			case "thinking_delta":
 			case "thinking_end":
 			case "toolcall_start":
-			case "toolcall_delta":
-			case "toolcall_end":
 				if (partialMessage) {
+					toolCallsSeenCount++;
 					partialMessage = event.partial;
 					context.messages[context.messages.length - 1] = partialMessage;
 					if (isOverToolCallLimit()) {
@@ -424,6 +428,20 @@ async function streamAssistantResponse(
 					if (isOverToolCallLimit()) {
 						return finishOverToolCallLimit();
 					}
+				}
+				break;
+
+			case "toolcall_delta":
+			case "toolcall_end":
+				if (partialMessage) {
+					partialMessage = event.partial;
+					context.messages[context.messages.length - 1] = partialMessage;
+					const message = cloneAssistantMessage(partialMessage);
+					await emit({
+						type: "message_update",
+						assistantMessageEvent: cloneAssistantMessageUpdateEvent(event, message),
+						message,
+					});
 				}
 				break;
 

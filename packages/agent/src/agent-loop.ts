@@ -437,8 +437,13 @@ async function streamAssistantResponse(
 						assistantMessageEvent: cloneAssistantMessageUpdateEvent(event, message),
 						message,
 					});
-					if (isOverToolCallLimit()) {
-						return finishOverToolCallLimit();
+					// Provider may push more tool calls during await; resync counter.
+					const newCount = partialMessage.content.filter((c) => c.type === "toolCall").length;
+					if (newCount > toolCallsSeenCount) {
+						toolCallsSeenCount = newCount;
+						if (isOverToolCallLimit()) {
+							return finishOverToolCallLimit();
+						}
 					}
 				}
 				break;

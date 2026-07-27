@@ -481,6 +481,62 @@ describe("TUI differential rendering", () => {
 		tui.stop();
 	});
 
+	it("does not clear scrollback when only content above the viewport changes", async () => {
+		const terminal = new LoggingVirtualTerminal(20, 5);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		// 12 lines with height 5 => previousViewportTop = 7 (visible: 7..11)
+		component.lines = Array.from({ length: 12 }, (_, i) => `Line ${i}`);
+		tui.start();
+		await terminal.waitForRender();
+
+		const initialRedraws = tui.fullRedraws;
+		terminal.clearWrites();
+
+		// Change only a line that has already scrolled out of the live viewport.
+		component.lines = Array.from({ length: 12 }, (_, i) => (i === 1 ? "CHANGED 1" : `Line ${i}`));
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.strictEqual(tui.fullRedraws, initialRedraws, "Above-viewport change should not full redraw");
+		assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Above-viewport change must not clear scrollback");
+		assert.deepStrictEqual(terminal.getViewport(), ["Line 7", "Line 8", "Line 9", "Line 10", "Line 11"]);
+
+		tui.stop();
+	});
+
+	it("patches from the live viewport when changes span above and into the viewport", async () => {
+		const terminal = new LoggingVirtualTerminal(20, 5);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		// 12 lines with height 5 => previousViewportTop = 7 (visible: 7..11)
+		component.lines = Array.from({ length: 12 }, (_, i) => `Line ${i}`);
+		tui.start();
+		await terminal.waitForRender();
+
+		const initialRedraws = tui.fullRedraws;
+		terminal.clearWrites();
+
+		// Change one historical line and one currently visible line.
+		component.lines = Array.from({ length: 12 }, (_, i) => {
+			if (i === 1) return "CHANGED 1";
+			if (i === 9) return "CHANGED 9";
+			return `Line ${i}`;
+		});
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.strictEqual(tui.fullRedraws, initialRedraws, "Spanning change should not full redraw");
+		assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Spanning change must not clear scrollback");
+		assert.deepStrictEqual(terminal.getViewport(), ["Line 7", "Line 8", "CHANGED 9", "Line 10", "Line 11"]);
+
+		tui.stop();
+	});
+
 	it("full re-renders when deleted lines move the viewport upward", async () => {
 		const terminal = new VirtualTerminal(20, 5);
 		const tui = new TUI(terminal);

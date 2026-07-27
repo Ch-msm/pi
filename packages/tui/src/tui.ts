@@ -1306,12 +1306,32 @@ export class TUI extends Container {
 			return;
 		}
 
-		// Differential rendering can only touch what was actually visible.
-		// If the first changed line is above the previous viewport, we need a full redraw.
+		// Differential rendering can only patch the live viewport. Changes above
+		// prevViewportTop live in terminal scrollback and cannot be updated in-place.
+		// Prefer leaving that scrollback slightly stale over fullRender(true):
+		// clearing scrollback with \x1b[3J jumps the terminal scroll position while
+		// the user is browsing history during streaming updates.
+		// Content shrinks are excluded: line shifts can make the live viewport stale
+		// and still require a full redraw.
 		if (firstChanged < prevViewportTop) {
-			logRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop})`);
-			fullRender(true);
-			return;
+			if (newLines.length < this.previousLines.length) {
+				logRedraw(`firstChanged < viewportTop with shrink (${firstChanged} < ${prevViewportTop})`);
+				fullRender(true);
+				return;
+			}
+			if (lastChanged < prevViewportTop) {
+				// Only historical lines changed; keep the live viewport as-is.
+				this.positionHardwareCursor(cursorPos, newLines.length);
+				this.previousLines = newLines;
+				this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+				this.previousWidth = width;
+				this.previousHeight = height;
+				this.previousViewportTop = prevViewportTop;
+				this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
+				return;
+			}
+			// Visible region also changed: patch from the live viewport downward.
+			firstChanged = prevViewportTop;
 		}
 
 		// Render from first changed line to end

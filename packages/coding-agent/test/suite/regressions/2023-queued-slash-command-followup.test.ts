@@ -69,6 +69,9 @@ describe("issue #2023 queued slash-command follow-up", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
 		extensionApi?.sendUserMessage("/testcmd queued", { deliverAs: "followUp" });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(harness.session.getFollowUpMessages()).toEqual([]);
+		expect(harness.session.getSteeringMessages()).toEqual([]);
 		releaseToolExecution?.();
 		await promptPromise;
 		await harness.session.agent.waitForIdle();

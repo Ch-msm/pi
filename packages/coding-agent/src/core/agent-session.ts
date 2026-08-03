@@ -1431,10 +1431,14 @@ export class AgentSession {
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
 	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
-		if (text.startsWith("/") && this._extensionRunner.getCommand(this._extractSlashCommandName(text))) {
+		const isExtensionCommand =
+			text.startsWith("/") && this._extensionRunner.getCommand(this._extractSlashCommandName(text));
+		if (isExtensionCommand) {
 			this._queuedExtensionCommands.set(text, (this._queuedExtensionCommands.get(text) ?? 0) + 1);
+		} else {
+			// 内部扩展命令静默执行，不进入 UI 显示队列（避免泄露内部命令与 token）
+			this._steeringMessages.push(text);
 		}
-		this._steeringMessages.push(text);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
@@ -1451,10 +1455,14 @@ export class AgentSession {
 	 * Internal: Queue a follow-up message (already expanded, no extension command check).
 	 */
 	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
-		if (text.startsWith("/") && this._extensionRunner.getCommand(this._extractSlashCommandName(text))) {
+		const isExtensionCommand =
+			text.startsWith("/") && this._extensionRunner.getCommand(this._extractSlashCommandName(text));
+		if (isExtensionCommand) {
 			this._queuedExtensionCommands.set(text, (this._queuedExtensionCommands.get(text) ?? 0) + 1);
+		} else {
+			// 内部扩展命令静默执行，不进入 UI 显示队列（避免泄露内部命令与 token）
+			this._followUpMessages.push(text);
 		}
-		this._followUpMessages.push(text);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {

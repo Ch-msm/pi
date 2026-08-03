@@ -1219,7 +1219,7 @@ export default function (pi: ExtensionAPI) {
     description: "Reload extensions, skills, prompts, and themes",
     parameters: Type.Object({}),
     async execute() {
-      pi.sendUserMessage("/reload-runtime", { deliverAs: "followUp" });
+      await pi.sendUserMessage("/reload-runtime", { deliverAs: "followUp" });
       return {
         content: [{ type: "text", text: "Queued /reload-runtime as a follow-up command." }],
       };
@@ -1332,7 +1332,8 @@ pi.sendUserMessage("And then summarize", { deliverAs: "followUp" });
   - `"steer"` - Queues the message for delivery after the current assistant turn finishes executing its tool calls
   - `"followUp"` - Waits for agent to finish all tools
 
-When not streaming, the message is sent immediately and triggers a new turn. When streaming without `deliverAs`, throws an error.
+When not streaming, the message is sent immediately and triggers a new turn. When streaming without `deliverAs`, the returned promise rejects.
+The returned promise resolves after the message has been queued, or after the triggered turn completes when the agent was idle. Await it from lifecycle handlers when subsequent control flow depends on the message being queued before that lifecycle event finishes.
 
 See [send-user-message.ts](../examples/extensions/send-user-message.ts) for a complete example.
 

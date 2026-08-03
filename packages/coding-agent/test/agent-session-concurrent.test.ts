@@ -271,7 +271,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		const pi = (
 			globalThis as typeof globalThis & {
 				testExtensionApi?: {
-					sendUserMessage: (content: string, options?: { deliverAs?: "steer" | "followUp" }) => void;
+					sendUserMessage: (content: string, options?: { deliverAs?: "steer" | "followUp" }) => Promise<void>;
 				};
 			}
 		).testExtensionApi;

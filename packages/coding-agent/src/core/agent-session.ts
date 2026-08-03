@@ -1569,6 +1569,20 @@ export class AgentSession {
 			if (images.length === 0) images = undefined;
 		}
 
+		if (
+			this.isStreaming &&
+			options?.deliverAs &&
+			text.startsWith("/") &&
+			this._extensionRunner.getCommand(this._extractSlashCommandName(text))
+		) {
+			if (options.deliverAs === "followUp") {
+				await this._queueFollowUp(text, images);
+			} else {
+				await this._queueSteer(text, images);
+			}
+			return;
+		}
+
 		// Use prompt() with expandPromptTemplates: false to skip command handling and template expansion
 		await this.prompt(text, {
 			expandPromptTemplates: false,
@@ -2417,13 +2431,15 @@ export class AgentSession {
 					});
 				},
 				sendUserMessage: (content, options) => {
-					this.sendUserMessage(content, options).catch((err) => {
+					const operation = this.sendUserMessage(content, options);
+					void operation.catch((err) => {
 						runner.emitError({
 							extensionPath: "<runtime>",
 							event: "send_user_message",
 							error: err instanceof Error ? err.message : String(err),
 						});
 					});
+					return operation;
 				},
 				appendEntry: (customType, data) => {
 					this.sessionManager.appendCustomEntry(customType, data);

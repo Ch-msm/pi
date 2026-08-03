@@ -27,7 +27,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Reload extensions, skills, prompts, and themes",
 		parameters: Type.Object({}),
 		async execute() {
-			pi.sendUserMessage("/reload-runtime", { deliverAs: "followUp" });
+			await pi.sendUserMessage("/reload-runtime", { deliverAs: "followUp" });
 			return {
 				content: [{ type: "text", text: "Queued /reload-runtime as a follow-up command." }],
 				details: {},

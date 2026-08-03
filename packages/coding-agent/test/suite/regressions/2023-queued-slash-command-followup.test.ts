@@ -77,4 +77,82 @@ describe("issue #2023 queued slash-command follow-up", () => {
 		expect(getUserTexts(harness)).toEqual(["start"]);
 		expect(getAssistantTexts(harness)).not.toContain("queued follow-up handled by model");
 	});
+
+	it("queues registered commands before extension input handlers can consume them", async () => {
+		let sent = false;
+		let sawCommandInput = false;
+		const commandRuns: string[] = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.registerCommand("testcmd", {
+						description: "Test command",
+						handler: async (args) => {
+							commandRuns.push(args);
+						},
+					});
+					pi.on("agent_end", async () => {
+						if (sent) return;
+						sent = true;
+						await pi.sendUserMessage("/testcmd queued-after-input", { deliverAs: "followUp" });
+					});
+				},
+				(pi) => {
+					pi.on("input", async (event) => {
+						if (event.source === "extension" && event.text.startsWith("/testcmd")) {
+							sawCommandInput = true;
+							await new Promise((resolve) => setTimeout(resolve, 20));
+							return { action: "handled" };
+						}
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("first turn complete"), fauxAssistantMessage("command leaked")]);
+
+		await harness.session.prompt("start");
+		await harness.session.agent.waitForIdle();
+
+		expect(commandRuns).toEqual(["queued-after-input"]);
+		expect(sawCommandInput).toBe(false);
+		expect(getUserTexts(harness)).toEqual(["start"]);
+		expect(getAssistantTexts(harness)).not.toContain("command leaked");
+	});
+
+	it("resolves sendUserMessage after asynchronous input processing has queued a normal follow-up", async () => {
+		let sent = false;
+		let inputFinished = false;
+		let resolvedAfterInput = false;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("agent_end", async () => {
+						if (sent) return;
+						sent = true;
+						await pi.sendUserMessage("delayed follow-up", { deliverAs: "followUp" });
+						resolvedAfterInput = inputFinished;
+					});
+				},
+				(pi) => {
+					pi.on("input", async (event) => {
+						if (event.source !== "extension") return;
+						await new Promise((resolve) => setTimeout(resolve, 20));
+						inputFinished = true;
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		harness.setResponses([fauxAssistantMessage("first turn complete"), fauxAssistantMessage("follow-up complete")]);
+
+		await harness.session.prompt("start");
+		await harness.session.agent.waitForIdle();
+
+		expect(resolvedAfterInput).toBe(true);
+		expect(getUserTexts(harness)).toEqual(["start", "delayed follow-up"]);
+		expect(getAssistantTexts(harness)).toContain("follow-up complete");
+	});
 });

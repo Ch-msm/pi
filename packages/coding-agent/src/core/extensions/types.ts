@@ -334,6 +334,13 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
+	/**
+	 * Start a new session, optionally seeding the new session with a user prompt
+	 * (equivalent to running `/new <prompt>`). The prompt is sent as the first
+	 * user message in the new session. Returns `{ cancelled: true }` if a
+	 * session-switch handler rejected the switch.
+	 */
+	newSession(prompt?: string): Promise<{ cancelled: boolean }>;
 }
 
 /**
@@ -347,12 +354,19 @@ export interface ExtensionCommandContext extends ExtensionContext {
 	/** Wait for the agent to finish streaming */
 	waitForIdle(): Promise<void>;
 
-	/** Start a new session, optionally with initialization. */
-	newSession(options?: {
-		parentSession?: string;
-		setup?: (sessionManager: SessionManager) => Promise<void>;
-		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
-	}): Promise<{ cancelled: boolean }>;
+	/**
+	 * Start a new session. Accepts a user prompt to seed the new session
+	 * (equivalent to `/new <prompt>`), or initialization options.
+	 */
+	newSession(
+		options?:
+			| string
+			| {
+					parentSession?: string;
+					setup?: (sessionManager: SessionManager) => Promise<void>;
+					withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+			  },
+	): Promise<{ cancelled: boolean }>;
 
 	/** Fork from a specific entry, creating a new session file. */
 	fork(
@@ -1525,11 +1539,15 @@ export interface ExtensionContextActions {
  */
 export interface ExtensionCommandContextActions {
 	waitForIdle: () => Promise<void>;
-	newSession: (options?: {
-		parentSession?: string;
-		setup?: (sessionManager: SessionManager) => Promise<void>;
-		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
-	}) => Promise<{ cancelled: boolean }>;
+	newSession: (
+		options?:
+			| string
+			| {
+					parentSession?: string;
+					setup?: (sessionManager: SessionManager) => Promise<void>;
+					withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+			  },
+	) => Promise<{ cancelled: boolean }>;
 	fork: (
 		entryId: string,
 		options?: { position?: "before" | "at"; withSession?: (ctx: ReplacedSessionContext) => Promise<void> },

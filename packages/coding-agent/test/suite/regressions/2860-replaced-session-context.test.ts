@@ -11,6 +11,7 @@ import {
 	createAgentSessionServices,
 } from "../../../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../../src/core/auth-storage.ts";
+import { normalizeNewSessionOptions } from "../../../src/core/extensions/index.ts";
 import { SessionManager } from "../../../src/core/session-manager.ts";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionFactory } from "../../../src/index.ts";
 
@@ -101,7 +102,7 @@ describe("regression #2860: replaced session callbacks", () => {
 			await session.bindExtensions({
 				commandContextActions: {
 					waitForIdle: () => session.agent.waitForIdle(),
-					newSession: async (options) => runtime.newSession(options),
+					newSession: async (options) => runtime.newSession(normalizeNewSessionOptions(options)),
 					fork: async (entryId, options) => {
 						const result = await runtime.fork(entryId, options);
 						return { cancelled: result.cancelled };
@@ -270,5 +271,50 @@ describe("regression #2860: replaced session callbacks", () => {
 			"user:switch callback message",
 			"assistant:switch reply",
 		]);
+	});
+
+	it("newSession(prompt) seeds the replacement session with the prompt as a user message", async () => {
+		let oldSessionFile: string | undefined;
+		const { runtime } = await createRuntimeForTest(
+			(pi) => {
+				pi.registerCommand("restart-with-prompt", {
+					description: "restart-with-prompt",
+					handler: async (_args, ctx) => {
+						oldSessionFile = ctx.sessionManager.getSessionFile();
+						await ctx.newSession("Continue the analysis in this new session");
+					},
+				});
+			},
+			["seed reply", "new session reply"],
+		);
+
+		await runtime.session.prompt("seed");
+		await runtime.session.prompt("/restart-with-prompt");
+
+		expect(runtime.session.sessionFile).not.toBe(oldSessionFile);
+		expect(runtime.session.messages.map((message) => `${message.role}:${getText(message)}`)).toEqual([
+			"user:Continue the analysis in this new session",
+			"assistant:new session reply",
+		]);
+	});
+
+	it("newSession with empty string prompt starts an empty session", async () => {
+		let oldSessionFile: string | undefined;
+		const { runtime } = await createRuntimeForTest((pi) => {
+			pi.registerCommand("restart-empty", {
+				description: "restart-empty",
+				handler: async (_args, ctx) => {
+					oldSessionFile = ctx.sessionManager.getSessionFile();
+					await ctx.newSession("   ");
+				},
+			});
+		}, []);
+
+		await runtime.session.prompt("seed");
+		await runtime.session.prompt("/restart-empty");
+
+		expect(runtime.session.sessionFile).not.toBe(oldSessionFile);
+		// No user message is sent for a blank prompt.
+		expect(runtime.session.messages).toHaveLength(0);
 	});
 });

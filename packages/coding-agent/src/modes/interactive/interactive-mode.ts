@@ -77,6 +77,7 @@ import type {
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
 } from "../../core/extensions/index.ts";
+import { normalizeNewSessionOptions } from "../../core/extensions/index.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
@@ -1534,7 +1535,7 @@ export class InteractiveMode {
 					}
 					this.statusContainer.clear();
 					try {
-						const result = await this.runtimeHost.newSession(options);
+						const result = await this.runtimeHost.newSession(normalizeNewSessionOptions(options));
 						if (!result.cancelled) {
 							this.renderCurrentSessionState();
 							this.ui.requestRender();
@@ -1705,6 +1706,14 @@ export class InteractiveMode {
 				})();
 			},
 			getSystemPrompt: () => this.session.systemPrompt,
+			newSession: async (prompt) => {
+				const result = await this.runtimeHost.newSession(normalizeNewSessionOptions(prompt));
+				if (!result.cancelled) {
+					this.renderCurrentSessionState();
+					this.ui.requestRender();
+				}
+				return result;
+			},
 		});
 
 		// Set up the extension shortcut handler on the default editor

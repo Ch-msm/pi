@@ -149,11 +149,50 @@ type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "
 
 export type ExtensionErrorListener = (error: ExtensionError) => void;
 
-export type NewSessionHandler = (options?: {
-	parentSession?: string;
-	setup?: (sessionManager: SessionManager) => Promise<void>;
-	withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
-}) => Promise<{ cancelled: boolean }>;
+export type NewSessionHandler = (
+	options?:
+		| string
+		| {
+				parentSession?: string;
+				setup?: (sessionManager: SessionManager) => Promise<void>;
+				withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+		  },
+) => Promise<{ cancelled: boolean }>;
+
+/**
+ * Normalize `newSession` arguments. A string prompt is converted into a
+ * `withSession` callback that sends the prompt as the first user message in the
+ * new session (equivalent to `/new <prompt>`). Object options are passed
+ * through unchanged.
+ */
+export function normalizeNewSessionOptions(
+	options?:
+		| string
+		| {
+				parentSession?: string;
+				setup?: (sessionManager: SessionManager) => Promise<void>;
+				withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+		  },
+):
+	| {
+			parentSession?: string;
+			setup?: (sessionManager: SessionManager) => Promise<void>;
+			withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+	  }
+	| undefined {
+	if (typeof options === "string") {
+		const prompt = options.trim();
+		if (prompt === "") {
+			return undefined;
+		}
+		return {
+			withSession: async (ctx) => {
+				await ctx.sendUserMessage(prompt);
+			},
+		};
+	}
+	return options;
+}
 
 export type ForkHandler = (
 	entryId: string,
@@ -651,6 +690,10 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.getSystemPromptFn();
 			},
+			newSession: (options) => {
+				runner.assertActive();
+				return runner.newSessionHandler(normalizeNewSessionOptions(options));
+			},
 		};
 	}
 
@@ -672,7 +715,7 @@ export class ExtensionRunner {
 		};
 		context.newSession = (options) => {
 			this.assertActive();
-			return this.newSessionHandler(options);
+			return this.newSessionHandler(normalizeNewSessionOptions(options));
 		};
 		context.fork = (entryId, options) => {
 			this.assertActive();

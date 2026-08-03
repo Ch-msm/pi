@@ -1010,7 +1010,17 @@ pi.registerCommand("my-cmd", {
 
 ### ctx.newSession(options?)
 
-Create a new session:
+Create a new session. Pass a string to seed the new session with a user prompt
+(equivalent to `/new <prompt>`):
+
+```typescript
+const result = await ctx.newSession("List the files in this directory");
+if (result.cancelled) {
+  // An extension cancelled the new session
+}
+```
+
+Or pass full options for more control:
 
 ```typescript
 const parentSession = ctx.sessionManager.getSessionFile();

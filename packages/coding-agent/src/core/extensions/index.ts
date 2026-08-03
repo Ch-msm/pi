@@ -18,7 +18,7 @@ export type {
 	ShutdownHandler,
 	SwitchSessionHandler,
 } from "./runner.ts";
-export { ExtensionRunner } from "./runner.ts";
+export { ExtensionRunner, normalizeNewSessionOptions } from "./runner.ts";
 export type {
 	AfterProviderResponseEvent,
 	AgentEndEvent,

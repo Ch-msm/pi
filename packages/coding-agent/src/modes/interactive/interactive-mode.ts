@@ -2626,9 +2626,10 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/new") {
+			if (text === "/new" || text.startsWith("/new ")) {
+				const prompt = text === "/new" ? undefined : text.slice(5).trim();
 				this.editor.setText("");
-				await this.handleClearCommand();
+				await this.handleClearCommand(prompt);
 				return;
 			}
 			if (text === "/compact" || text.startsWith("/compact ")) {
@@ -5566,18 +5567,24 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private async handleClearCommand(): Promise<void> {
+	private async handleClearCommand(prompt?: string): Promise<void> {
 		if (this.loadingAnimation) {
 			this.loadingAnimation.stop();
 			this.loadingAnimation = undefined;
 		}
 		this.statusContainer.clear();
+		// Clear the chat container before switching so messages emitted by a
+		// newSession(prompt) withSession callback render into the new session view
+		// instead of flashing in the old session's chat.
+		this.chatContainer.clear();
 		try {
-			const result = await this.runtimeHost.newSession();
+			const result = await this.runtimeHost.newSession(normalizeNewSessionOptions(prompt));
+			// Re-render either way: on success it shows the new session, on
+			// cancellation it restores the old session's view.
+			this.renderCurrentSessionState();
 			if (result.cancelled) {
 				return;
 			}
-			this.renderCurrentSessionState();
 			this.chatContainer.addChild(new Spacer(1));
 			this.chatContainer.addChild(new Text(`${theme.fg("accent", "✓ New session started")}`, 1, 1));
 			this.ui.requestRender();

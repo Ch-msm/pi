@@ -1404,6 +1404,8 @@ Labels persist in the session and survive restarts. Use them to mark important p
 
 Register a command.
 
+Set `internal: true` for runtime-only commands. Internal commands remain executable by the runtime (including queued extension-command dispatch), but direct user prompts are rejected and the commands are omitted from user-facing command lists, autocomplete, and RPC command discovery.
+
 If multiple extensions register the same command name, pi keeps them all and assigns numeric invocation suffixes in load order, for example `/review:1` and `/review:2`.
 
 ```typescript

@@ -637,6 +637,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				const commands: RpcSlashCommand[] = [];
 
 				for (const command of session.extensionRunner.getRegisteredCommands()) {
+					if (command.internal) continue;
 					commands.push({
 						name: command.invocationName,
 						description: command.description,

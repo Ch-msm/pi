@@ -586,7 +586,7 @@ export class AgentSession {
 				continue;
 			}
 
-			const handled = await this._tryExecuteExtensionCommand(text);
+			const handled = await this._tryExecuteExtensionCommand(text, true);
 			if (!handled) {
 				remaining.push(message);
 			}
@@ -1335,7 +1335,7 @@ export class AgentSession {
 	/**
 	 * Try to execute an extension command. Returns true if command was found and executed.
 	 */
-	private async _tryExecuteExtensionCommand(text: string): Promise<boolean> {
+	private async _tryExecuteExtensionCommand(text: string, allowInternal = false): Promise<boolean> {
 		// Parse command name and args
 		const spaceIndex = text.indexOf(" ");
 		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
@@ -1343,6 +1343,13 @@ export class AgentSession {
 
 		const command = this._extensionRunner.getCommand(commandName);
 		if (!command) return false;
+		if (command.internal && !allowInternal) {
+			const ctx = this._extensionRunner.createCommandContext();
+			if (ctx.hasUI) {
+				ctx.ui.notify(`/${commandName} is an internal command and cannot be invoked directly.`, "error");
+			}
+			return true;
+		}
 
 		// Get command context from extension runner (includes session control methods)
 		const ctx = this._extensionRunner.createCommandContext();
@@ -2403,12 +2410,15 @@ export class AgentSession {
 
 	private _bindExtensionCore(runner: ExtensionRunner): void {
 		const getCommands = (): SlashCommandInfo[] => {
-			const extensionCommands: SlashCommandInfo[] = runner.getRegisteredCommands().map((command) => ({
-				name: command.invocationName,
-				description: command.description,
-				source: "extension",
-				sourceInfo: command.sourceInfo,
-			}));
+			const extensionCommands: SlashCommandInfo[] = runner
+				.getRegisteredCommands()
+				.filter((command) => !command.internal)
+				.map((command) => ({
+					name: command.invocationName,
+					description: command.description,
+					source: "extension",
+					sourceInfo: command.sourceInfo,
+				}));
 
 			const templates: SlashCommandInfo[] = this.promptTemplates.map((template) => ({
 				name: template.name,

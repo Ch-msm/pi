@@ -555,38 +555,50 @@ export class ExtensionRunner {
 
 	private resolveRegisteredCommands(): ResolvedCommand[] {
 		const commands: RegisteredCommand[] = [];
-		const counts = new Map<string, number>();
-
 		for (const ext of this.extensions) {
 			for (const command of ext.commands.values()) {
 				commands.push(command);
-				counts.set(command.name, (counts.get(command.name) ?? 0) + 1);
 			}
 		}
 
-		const seen = new Map<string, number>();
+		const resolved = new Map<RegisteredCommand, string>();
 		const takenInvocationNames = new Set<string>();
-
-		return commands.map((command) => {
-			const occurrence = (seen.get(command.name) ?? 0) + 1;
-			seen.set(command.name, occurrence);
-
-			let invocationName = (counts.get(command.name) ?? 0) > 1 ? `${command.name}:${occurrence}` : command.name;
-
-			if (takenInvocationNames.has(invocationName)) {
-				let suffix = occurrence;
-				do {
-					suffix++;
-					invocationName = `${command.name}:${suffix}`;
-				} while (takenInvocationNames.has(invocationName));
+		const assignInvocationNames = (internal: boolean): void => {
+			const counts = new Map<string, number>();
+			const seen = new Map<string, number>();
+			for (const command of commands) {
+				if ((command.internal ?? false) !== internal) continue;
+				counts.set(command.name, (counts.get(command.name) ?? 0) + 1);
 			}
 
-			takenInvocationNames.add(invocationName);
-			return {
-				...command,
-				invocationName,
-			};
-		});
+			for (const command of commands) {
+				if ((command.internal ?? false) !== internal) continue;
+				const occurrence = (seen.get(command.name) ?? 0) + 1;
+				seen.set(command.name, occurrence);
+
+				let invocationName = (counts.get(command.name) ?? 0) > 1 ? `${command.name}:${occurrence}` : command.name;
+				if (takenInvocationNames.has(invocationName)) {
+					let suffix = occurrence;
+					do {
+						suffix++;
+						invocationName = `${command.name}:${suffix}`;
+					} while (takenInvocationNames.has(invocationName));
+				}
+
+				resolved.set(command, invocationName);
+				takenInvocationNames.add(invocationName);
+			}
+		};
+
+		// Reserve internal command names first so a user command cannot shadow a
+		// queued runtime command such as /plan-mode-complete.
+		assignInvocationNames(true);
+		assignInvocationNames(false);
+
+		return commands.map((command) => ({
+			...command,
+			invocationName: resolved.get(command)!,
+		}));
 	}
 
 	getRegisteredCommands(): ResolvedCommand[] {

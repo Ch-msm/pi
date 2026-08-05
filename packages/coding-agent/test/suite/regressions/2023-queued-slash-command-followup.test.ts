@@ -17,6 +17,7 @@ describe("issue #2023 queued slash-command follow-up", () => {
 	it("dispatches extension-origin queued slash-command follow-ups as extension commands", async () => {
 		let extensionApi: ExtensionAPI | undefined;
 		const commandRuns: string[] = [];
+		const internalCommandRuns: string[] = [];
 		let releaseToolExecution: (() => void) | undefined;
 		const toolRelease = new Promise<void>((resolve) => {
 			releaseToolExecution = resolve;
@@ -45,6 +46,13 @@ describe("issue #2023 queued slash-command follow-up", () => {
 							commandRuns.push(args);
 						},
 					});
+					pi.registerCommand("internal-cmd", {
+						internal: true,
+						description: "Internal command",
+						handler: async (args) => {
+							internalCommandRuns.push(args);
+						},
+					});
 				},
 			],
 		});
@@ -69,6 +77,7 @@ describe("issue #2023 queued slash-command follow-up", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
 		extensionApi?.sendUserMessage("/testcmd queued", { deliverAs: "followUp" });
+		extensionApi?.sendUserMessage("/internal-cmd queued-internal", { deliverAs: "followUp" });
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(harness.session.getFollowUpMessages()).toEqual([]);
 		expect(harness.session.getSteeringMessages()).toEqual([]);
@@ -77,6 +86,7 @@ describe("issue #2023 queued slash-command follow-up", () => {
 		await harness.session.agent.waitForIdle();
 
 		expect(commandRuns).toEqual(["queued"]);
+		expect(internalCommandRuns).toEqual(["queued-internal"]);
 		expect(getUserTexts(harness)).toEqual(["start"]);
 		expect(getAssistantTexts(harness)).not.toContain("queued follow-up handled by model");
 	});

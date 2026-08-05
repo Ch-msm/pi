@@ -89,6 +89,38 @@ describe("AgentSession queue characterization", () => {
 		expect(harness.session.messages).toEqual([]);
 	});
 
+	it("hides internal extension commands from user-facing lists while keeping them executable", async () => {
+		let visibleCommands: string[] = [];
+		let internalCommandRuns = 0;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.registerCommand("internal-cmd", {
+						internal: true,
+						description: "Internal command",
+						handler: async () => {
+							internalCommandRuns++;
+						},
+					});
+					pi.registerCommand("inspect-commands", {
+						description: "Inspect commands",
+						handler: async () => {
+							visibleCommands = pi.getCommands().map((command) => command.name);
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		await harness.session.prompt("/inspect-commands");
+		expect(visibleCommands).toContain("inspect-commands");
+		expect(visibleCommands).not.toContain("internal-cmd");
+
+		await harness.session.prompt("/internal-cmd");
+		expect(internalCommandRuns).toBe(0);
+	});
+
 	it("delivers extension-origin steering messages before the next LLM call", async () => {
 		let extensionApi: ExtensionAPI | undefined;
 		const waiting = await createWaitingHarness({

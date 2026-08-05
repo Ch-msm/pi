@@ -1090,6 +1090,8 @@ export type MessageRenderer<T = unknown> = (
 export interface RegisteredCommand {
 	name: string;
 	sourceInfo: SourceInfo;
+	/** Internal commands remain executable by the runtime but are hidden from user-facing command lists. */
+	internal?: boolean;
 	description?: string;
 	getArgumentCompletions?: (argumentPrefix: string) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
 	handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;

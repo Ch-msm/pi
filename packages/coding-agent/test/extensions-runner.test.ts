@@ -377,6 +377,27 @@ describe("ExtensionRunner", () => {
 			expect(commands.map((c) => c.invocationName).sort()).toEqual(["cmd-a", "cmd-b"]);
 		});
 
+		it("keeps internal commands executable but marks them for filtering from user-facing lists", async () => {
+			const cmdCode = `
+				export default function(pi) {
+					pi.registerCommand("internal-cmd", {
+						internal: true,
+						description: "Internal command",
+						handler: async () => {},
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "internal-cmd.ts"), cmdCode);
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const commands = runner.getRegisteredCommands();
+
+			expect(commands).toHaveLength(1);
+			expect(commands[0]?.internal).toBe(true);
+			expect(runner.getCommand("internal-cmd")).toBeDefined();
+		});
+
 		it("gets command by invocation name", async () => {
 			const cmdCode = `
 				export default function(pi) {
@@ -399,6 +420,31 @@ describe("ExtensionRunner", () => {
 
 			const missing = runner.getCommand("not-exists");
 			expect(missing).toBeUndefined();
+		});
+
+		it("keeps internal command names separate from visible command suffixes", async () => {
+			const cmdCode = (internal: boolean, description: string) => `
+				export default function(pi) {
+					pi.registerCommand("shared-cmd", {
+						internal: ${internal},
+						description: "${description}",
+						handler: async () => {},
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "a-internal.ts"), cmdCode(true, "Internal command"));
+			fs.writeFileSync(path.join(extensionsDir, "b-visible.ts"), cmdCode(false, "Visible command"));
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const commands = runner.getRegisteredCommands();
+
+			expect(commands.map((command) => [command.internal, command.invocationName])).toEqual([
+				[true, "shared-cmd"],
+				[false, "shared-cmd:2"],
+			]);
+			expect(runner.getCommand("shared-cmd")?.internal).toBe(true);
+			expect(runner.getCommand("shared-cmd:2")?.internal).toBe(false);
 		});
 
 		it("suffixes duplicate extension commands in insertion order", async () => {

@@ -467,7 +467,7 @@ export class InteractiveMode {
 		const builtinNames = new Set(BUILTIN_SLASH_COMMANDS.map((command) => command.name));
 		return extensionRunner
 			.getRegisteredCommands()
-			.filter((command) => builtinNames.has(command.name))
+			.filter((command) => !command.internal && builtinNames.has(command.name))
 			.map((command) => ({
 				type: "warning" as const,
 				message:
@@ -527,7 +527,7 @@ export class InteractiveMode {
 		const builtinCommandNames = new Set(slashCommands.map((c) => c.name));
 		const extensionCommands: SlashCommand[] = this.session.extensionRunner
 			.getRegisteredCommands()
-			.filter((cmd) => !builtinCommandNames.has(cmd.name))
+			.filter((cmd) => !cmd.internal && !builtinCommandNames.has(cmd.name))
 			.map((cmd) => ({
 				name: cmd.invocationName,
 				description: this.prefixAutocompleteDescription(cmd.description, cmd.sourceInfo),

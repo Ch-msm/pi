@@ -1344,10 +1344,7 @@ export class AgentSession {
 		const command = this._extensionRunner.getCommand(commandName);
 		if (!command) return false;
 		if (command.internal && !allowInternal) {
-			const ctx = this._extensionRunner.createCommandContext();
-			if (ctx.hasUI) {
-				ctx.ui.notify(`/${commandName} is an internal command and cannot be invoked directly.`, "error");
-			}
+			this._notifyInternalCommandRejected(command.invocationName);
 			return true;
 		}
 
@@ -1397,14 +1394,20 @@ export class AgentSession {
 	 * Queue a steering message while the agent is running.
 	 * Delivered after the current assistant turn finishes executing its tool calls,
 	 * before the next LLM call.
-	 * Expands inline skills and prompt templates. Errors on extension commands.
+	 * Expands inline skills and queues registered extension commands without expansion.
 	 * @param images Optional image attachments to include with the message
-	 * @throws Error if text is an extension command
 	 */
 	async steer(text: string, images?: ImageContent[]): Promise<void> {
-		if (text.startsWith("/") && this._extensionRunner.getCommand(this._extractSlashCommandName(text))) {
-			await this._queueSteer(text, images);
-			return;
+		if (text.startsWith("/")) {
+			const command = this._extensionRunner.getCommand(this._extractSlashCommandName(text));
+			if (command) {
+				if (command.internal) {
+					this._notifyInternalCommandRejected(command.invocationName);
+					return;
+				}
+				await this._queueSteer(text, images);
+				return;
+			}
 		}
 
 		// Expand inline skills and prompt templates
@@ -1417,14 +1420,20 @@ export class AgentSession {
 	/**
 	 * Queue a follow-up message to be processed after the agent finishes.
 	 * Delivered only when agent has no more tool calls or steering messages.
-	 * Expands inline skills and prompt templates. Errors on extension commands.
+	 * Expands inline skills and queues registered extension commands without expansion.
 	 * @param images Optional image attachments to include with the message
-	 * @throws Error if text is an extension command
 	 */
 	async followUp(text: string, images?: ImageContent[]): Promise<void> {
-		if (text.startsWith("/") && this._extensionRunner.getCommand(this._extractSlashCommandName(text))) {
-			await this._queueFollowUp(text, images);
-			return;
+		if (text.startsWith("/")) {
+			const command = this._extensionRunner.getCommand(this._extractSlashCommandName(text));
+			if (command) {
+				if (command.internal) {
+					this._notifyInternalCommandRejected(command.invocationName);
+					return;
+				}
+				await this._queueFollowUp(text, images);
+				return;
+			}
 		}
 
 		// Expand inline skills and prompt templates
@@ -1443,7 +1452,6 @@ export class AgentSession {
 		if (isExtensionCommand) {
 			this._queuedExtensionCommands.set(text, (this._queuedExtensionCommands.get(text) ?? 0) + 1);
 		} else {
-			// 内部扩展命令静默执行，不进入 UI 显示队列（避免泄露内部命令与 token）
 			this._steeringMessages.push(text);
 		}
 		this._emitQueueUpdate();
@@ -1467,7 +1475,6 @@ export class AgentSession {
 		if (isExtensionCommand) {
 			this._queuedExtensionCommands.set(text, (this._queuedExtensionCommands.get(text) ?? 0) + 1);
 		} else {
-			// 内部扩展命令静默执行，不进入 UI 显示队列（避免泄露内部命令与 token）
 			this._followUpMessages.push(text);
 		}
 		this._emitQueueUpdate();
@@ -1485,6 +1492,13 @@ export class AgentSession {
 	private _extractSlashCommandName(text: string): string {
 		const spaceIndex = text.indexOf(" ");
 		return spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+	}
+
+	private _notifyInternalCommandRejected(commandName: string): void {
+		const ctx = this._extensionRunner.createCommandContext();
+		if (ctx.hasUI) {
+			ctx.ui.notify(`/${commandName} is an internal command and cannot be invoked directly.`, "error");
+		}
 	}
 
 	/**

@@ -118,6 +118,8 @@ describe("AgentSession queue characterization", () => {
 		expect(visibleCommands).not.toContain("internal-cmd");
 
 		await harness.session.prompt("/internal-cmd");
+		await harness.session.steer("/internal-cmd");
+		await harness.session.followUp("/internal-cmd");
 		expect(internalCommandRuns).toBe(0);
 	});
 

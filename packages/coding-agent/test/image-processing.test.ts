@@ -101,11 +101,13 @@ describe("resizeImage", () => {
 		const originalBuffer = Buffer.from(LARGE_PNG_200x200, "base64");
 		const originalSize = originalBuffer.length;
 
-		// Set maxBytes to less than the original encoded image size
+		// Set maxBytes to less than the original encoded image size, and drop the
+		// compression trigger below this image's size so it actually gets re-encoded.
 		const result = await resizeImage(imageBytes(LARGE_PNG_200x200), "image/png", {
 			maxWidth: 2000,
 			maxHeight: 2000,
 			maxBytes: Math.floor(LARGE_PNG_200x200.length * 0.9),
+			compressAboveBytes: 1,
 		});
 
 		// Should have tried to reduce size
@@ -115,11 +117,26 @@ describe("resizeImage", () => {
 		expect(result!.data.length).toBeLessThan(LARGE_PNG_200x200.length);
 	});
 
+	it("should leave a small image untouched even when maxBytes is tiny", async () => {
+		// Under the compression trigger the image is returned as-is, so an
+		// unreachable budget must not cause a re-encode (or a null).
+		const result = await resizeImage(imageBytes(LARGE_PNG_200x200), "image/png", {
+			maxWidth: 2000,
+			maxHeight: 2000,
+			maxBytes: 1,
+		});
+
+		expect(result).not.toBeNull();
+		expect(result!.wasResized).toBe(false);
+		expect(result!.data).toBe(LARGE_PNG_200x200);
+	});
+
 	it("should return null when image cannot be resized below maxBytes", async () => {
 		const result = await resizeImage(imageBytes(LARGE_PNG_200x200), "image/png", {
 			maxWidth: 2000,
 			maxHeight: 2000,
 			maxBytes: 1,
+			compressAboveBytes: 1,
 		});
 
 		expect(result).toBeNull();

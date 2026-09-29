@@ -2643,6 +2643,8 @@ export class AgentSession {
 		includeAllExtensionTools?: boolean;
 	}): void {
 		const autoResizeImages = this.settingsManager.getImageAutoResize();
+		const maxImageBytes = this.settingsManager.getImageMaxBytes();
+		const imageCompressAboveBytes = this.settingsManager.getImageCompressAboveBytes();
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
 		const baseToolDefinitions = this._baseToolsOverride
@@ -2653,7 +2655,7 @@ export class AgentSession {
 					]),
 				)
 			: createAllToolDefinitions(this._cwd, {
-					read: { autoResizeImages },
+					read: { autoResizeImages, maxImageBytes, compressAboveBytes: imageCompressAboveBytes },
 					bash: { commandPrefix: shellCommandPrefix, shellPath },
 				});
 

@@ -13,6 +13,16 @@ import {
 } from "@earendil-works/pi-tui";
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import type { WarningSettings } from "../../../core/settings-manager.ts";
+import {
+	DEFAULT_COMPRESS_ABOVE_BYTES,
+	DEFAULT_MAX_BYTES,
+	formatImageCompressAboveBytes,
+	formatImageMaxBytes,
+	IMAGE_COMPRESS_ABOVE_CHOICES,
+	IMAGE_MAX_BYTES_CHOICES,
+	parseImageCompressAboveBytes,
+	parseImageMaxBytes,
+} from "../../../utils/image-resize-core.ts";
 import { getSelectListTheme, getSettingsListTheme, theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyDisplayText } from "./keybinding-hints.ts";
@@ -37,6 +47,8 @@ export interface SettingsConfig {
 	showImages: boolean;
 	imageWidthCells: number;
 	autoResizeImages: boolean;
+	imageMaxBytes?: number;
+	imageCompressAboveBytes?: number;
 	blockImages: boolean;
 	enableSkillCommands: boolean;
 	steeringMode: "all" | "one-at-a-time";
@@ -66,6 +78,8 @@ export interface SettingsCallbacks {
 	onShowImagesChange: (enabled: boolean) => void;
 	onImageWidthCellsChange: (width: number) => void;
 	onAutoResizeImagesChange: (enabled: boolean) => void;
+	onImageMaxBytesChange: (maxBytes: number) => void;
+	onImageCompressAboveBytesChange: (bytes: number) => void;
 	onBlockImagesChange: (blocked: boolean) => void;
 	onEnableSkillCommandsChange: (enabled: boolean) => void;
 	onSteeringModeChange: (mode: "all" | "one-at-a-time") => void;
@@ -388,6 +402,26 @@ export class SettingsSelectorComponent extends Container {
 			values: ["true", "false"],
 		});
 
+		// Image size budget (insert after auto-resize toggle)
+		const autoResizeToggleIndex = items.findIndex((item) => item.id === "auto-resize-images");
+		items.splice(autoResizeToggleIndex + 1, 0, {
+			id: "image-max-bytes",
+			label: "Image size limit",
+			description: "Images above this base64 size are re-encoded as lossy JPEG to cut upload volume",
+			currentValue: formatImageMaxBytes(config.imageMaxBytes ?? DEFAULT_MAX_BYTES),
+			values: IMAGE_MAX_BYTES_CHOICES.map((choice) => choice.label),
+		});
+
+		const imageMaxBytesIndex = items.findIndex((item) => item.id === "image-max-bytes");
+		items.splice(imageMaxBytesIndex + 1, 0, {
+			id: "image-compress-above",
+			label: "Compress images above",
+			description:
+				"Images under this original size are sent untouched; larger ones are compressed to the limit above",
+			currentValue: formatImageCompressAboveBytes(config.imageCompressAboveBytes ?? DEFAULT_COMPRESS_ABOVE_BYTES),
+			values: IMAGE_COMPRESS_ABOVE_CHOICES.map((choice) => choice.label),
+		});
+
 		// Block images toggle (always available, insert after auto-resize-images)
 		const autoResizeIndex = items.findIndex((item) => item.id === "auto-resize-images");
 		items.splice(autoResizeIndex + 1, 0, {
@@ -479,6 +513,20 @@ export class SettingsSelectorComponent extends Container {
 					case "auto-resize-images":
 						callbacks.onAutoResizeImagesChange(newValue === "true");
 						break;
+					case "image-compress-above": {
+						const parsedAbove = parseImageCompressAboveBytes(newValue);
+						if (parsedAbove !== undefined) {
+							callbacks.onImageCompressAboveBytesChange(parsedAbove);
+						}
+						break;
+					}
+					case "image-max-bytes": {
+						const parsedMaxBytes = parseImageMaxBytes(newValue);
+						if (parsedMaxBytes !== undefined) {
+							callbacks.onImageMaxBytesChange(parsedMaxBytes);
+						}
+						break;
+					}
 					case "block-images":
 						callbacks.onBlockImagesChange(newValue === "true");
 						break;

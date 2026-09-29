@@ -18,11 +18,17 @@ export interface ProcessedFiles {
 export interface ProcessFileOptions {
 	/** Whether to auto-resize images to 2000x2000 max. Default: true */
 	autoResizeImages?: boolean;
+	/** 压缩目标：图片 base64 体积上限（字节）。未设置时用缺省值。 */
+	maxImageBytes?: number;
+	/** 触发压缩的原图字节阈值，不超过它则原样返回。未设置时用缺省值。 */
+	compressAboveBytes?: number;
 }
 
 /** Process @file arguments into text content and image attachments */
 export async function processFileArguments(fileArgs: string[], options?: ProcessFileOptions): Promise<ProcessedFiles> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
+	const maxImageBytes = options?.maxImageBytes;
+	const compressAboveBytes = options?.compressAboveBytes;
 	let text = "";
 	const images: ImageContent[] = [];
 
@@ -55,7 +61,7 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 			let dimensionNote: string | undefined;
 
 			if (autoResizeImages) {
-				const resized = await resizeImage(content, mimeType);
+				const resized = await resizeImage(content, mimeType, { maxBytes: maxImageBytes, compressAboveBytes });
 				if (!resized) {
 					text += `<file name="${absolutePath}">[Image omitted: could not be resized below the inline image size limit.]</file>\n`;
 					continue;

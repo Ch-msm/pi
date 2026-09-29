@@ -117,6 +117,8 @@ function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc"> {
 async function prepareInitialMessage(
 	parsed: Args,
 	autoResizeImages: boolean,
+	maxImageBytes: number | undefined,
+	compressAboveBytes: number | undefined,
 	stdinContent?: string,
 ): Promise<{
 	initialMessage?: string;
@@ -126,7 +128,11 @@ async function prepareInitialMessage(
 		return buildInitialMessage({ parsed, stdinContent });
 	}
 
-	const { text, images } = await processFileArguments(parsed.fileArgs, { autoResizeImages });
+	const { text, images } = await processFileArguments(parsed.fileArgs, {
+		autoResizeImages,
+		maxImageBytes,
+		compressAboveBytes,
+	});
 	return buildInitialMessage({
 		parsed,
 		fileText: text,
@@ -791,6 +797,8 @@ export async function main(args: string[], options?: MainOptions) {
 	const { initialMessage, initialImages } = await prepareInitialMessage(
 		parsed,
 		settingsManager.getImageAutoResize(),
+		settingsManager.getImageMaxBytes(),
+		settingsManager.getImageCompressAboveBytes(),
 		stdinContent,
 	);
 	time("prepareInitialMessage");

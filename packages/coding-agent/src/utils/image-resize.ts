@@ -2,6 +2,14 @@ import { Worker } from "node:worker_threads";
 import { type ImageResizeOptions, type ResizedImage, resizeImageInProcess } from "./image-resize-core.ts";
 
 export type { ImageResizeOptions, ResizedImage } from "./image-resize-core.ts";
+export {
+	formatImageCompressAboveBytes,
+	formatImageMaxBytes,
+	IMAGE_COMPRESS_ABOVE_CHOICES,
+	IMAGE_MAX_BYTES_CHOICES,
+	parseImageCompressAboveBytes,
+	parseImageMaxBytes,
+} from "./image-resize-core.ts";
 
 interface ResizeImageWorkerResponse {
 	result?: ResizedImage | null;
@@ -114,7 +122,8 @@ export async function resizeImage(
  * This helps the model understand the coordinate mapping.
  */
 export function formatDimensionNote(result: ResizedImage): string | undefined {
-	if (!result.wasResized) {
+	// 尺寸没变（只换了编码）时缩放比为 1.00，坐标说明没有意义。
+	if (!result.wasResized || (result.originalWidth === result.width && result.originalHeight === result.height)) {
 		return undefined;
 	}
 

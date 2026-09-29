@@ -41,6 +41,12 @@ export interface TerminalSettings {
 
 export interface ImageSettings {
 	autoResize?: boolean; // default: true (resize images to 2000x2000 max for better model compatibility)
+	// maxBytes 为图片 base64 体积上限（字节）。未设置时使用 image-resize-core 的缺省值。
+	// 超过上限的图片会改用有损编码以压缩上行流量，上限以内的图片保留原始编码。
+	maxBytes?: number;
+	// compressAboveBytes 为触发压缩的原图字节阈值，不超过它的图片原样返回。
+	// 未设置时使用 image-resize-core 的缺省值。
+	compressAboveBytes?: number;
 	blockImages?: boolean; // default: false - when true, prevents all images from being sent to LLM providers
 }
 
@@ -1056,6 +1062,40 @@ export class SettingsManager {
 
 	getImageAutoResize(): boolean {
 		return this.settings.images?.autoResize ?? true;
+	}
+
+	getImageMaxBytes(): number | undefined {
+		return this.settings.images?.maxBytes;
+	}
+
+	getImageCompressAboveBytes(): number | undefined {
+		return this.settings.images?.compressAboveBytes;
+	}
+
+	setImageCompressAboveBytes(bytes: number | undefined): void {
+		if (!this.globalSettings.images) {
+			this.globalSettings.images = {};
+		}
+		if (bytes === undefined) {
+			delete this.globalSettings.images.compressAboveBytes;
+		} else {
+			this.globalSettings.images.compressAboveBytes = bytes;
+		}
+		this.markModified("images", "compressAboveBytes");
+		this.save();
+	}
+
+	setImageMaxBytes(maxBytes: number | undefined): void {
+		if (!this.globalSettings.images) {
+			this.globalSettings.images = {};
+		}
+		if (maxBytes === undefined) {
+			delete this.globalSettings.images.maxBytes;
+		} else {
+			this.globalSettings.images.maxBytes = maxBytes;
+		}
+		this.markModified("images", "maxBytes");
+		this.save();
 	}
 
 	setImageAutoResize(enabled: boolean): void {

@@ -4027,6 +4027,8 @@ export class InteractiveMode {
 					showImages: this.settingsManager.getShowImages(),
 					imageWidthCells: this.settingsManager.getImageWidthCells(),
 					autoResizeImages: this.settingsManager.getImageAutoResize(),
+					imageMaxBytes: this.settingsManager.getImageMaxBytes(),
+					imageCompressAboveBytes: this.settingsManager.getImageCompressAboveBytes(),
 					blockImages: this.settingsManager.getBlockImages(),
 					enableSkillCommands: this.settingsManager.getEnableSkillCommands(),
 					steeringMode: this.session.steeringMode,
@@ -4073,6 +4075,12 @@ export class InteractiveMode {
 					},
 					onAutoResizeImagesChange: (enabled) => {
 						this.settingsManager.setImageAutoResize(enabled);
+					},
+					onImageMaxBytesChange: (maxBytes) => {
+						this.settingsManager.setImageMaxBytes(maxBytes);
+					},
+					onImageCompressAboveBytesChange: (bytes) => {
+						this.settingsManager.setImageCompressAboveBytes(bytes);
 					},
 					onBlockImagesChange: (blocked) => {
 						this.settingsManager.setBlockImages(blocked);

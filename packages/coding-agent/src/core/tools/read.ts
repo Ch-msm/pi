@@ -62,6 +62,10 @@ const defaultReadOperations: ReadOperations = {
 export interface ReadToolOptions {
 	/** Whether to auto-resize images to 2000x2000 max. Default: true */
 	autoResizeImages?: boolean;
+	/** 压缩目标：图片 base64 体积上限（字节）。未设置时用缺省值。 */
+	maxImageBytes?: number;
+	/** 触发压缩的原图字节阈值，不超过它则原样返回。未设置时用缺省值。 */
+	compressAboveBytes?: number;
 	/** Custom operations for file reading. Default: local filesystem */
 	operations?: ReadOperations;
 }
@@ -209,6 +213,8 @@ export function createReadToolDefinition(
 	options?: ReadToolOptions,
 ): ToolDefinition<typeof readSchema, ReadToolDetails | undefined> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
+	const maxImageBytes = options?.maxImageBytes;
+	const compressAboveBytes = options?.compressAboveBytes;
 	const ops = options?.operations ?? defaultReadOperations;
 	return {
 		name: "read",
@@ -253,7 +259,10 @@ export function createReadToolDefinition(
 								const buffer = await ops.readFile(absolutePath);
 								if (autoResizeImages) {
 									// Resize image if needed before sending it back to the model.
-									const resized = await resizeImage(buffer, mimeType);
+									const resized = await resizeImage(buffer, mimeType, {
+										maxBytes: maxImageBytes,
+										compressAboveBytes,
+									});
 									if (!resized) {
 										let textNote = `Read image file [${mimeType}]\n[Image omitted: could not be resized below the inline image size limit.]`;
 										if (nonVisionImageNote) textNote += `\n${nonVisionImageNote}`;

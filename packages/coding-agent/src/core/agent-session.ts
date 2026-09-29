@@ -1829,8 +1829,11 @@ export class AgentSession {
 		const levels = this.model ? (getSupportedThinkingLevels(this.model) as ThinkingLevel[]) : THINKING_LEVELS;
 
 		// Filter out minimal/low by default, unless the model only supports those
+		// or explicitly opts in via thinkingLevelMap.
+		const map = this.model?.thinkingLevelMap;
+		const isExplicit = (l: ThinkingLevel): boolean => map?.[l] !== undefined && map?.[l] !== null;
 		const hasHigherLevel = levels.some((l) => l !== "off" && l !== "minimal" && l !== "low");
-		if (hasHigherLevel) {
+		if (hasHigherLevel && !isExplicit("minimal") && !isExplicit("low")) {
 			return levels.filter((l) => l !== "minimal" && l !== "low");
 		}
 		return levels;

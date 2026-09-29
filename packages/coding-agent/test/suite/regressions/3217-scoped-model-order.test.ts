@@ -94,11 +94,19 @@ describe("issue #3217 scoped model ordering", () => {
 		const renderedLines = stripAnsi(selector.render(120).join("\n"))
 			.split("\n")
 			.filter((line) => line.includes(`[${modelOne.provider}]`));
-		const orderedIds = renderedLines.slice(0, 3).map((line) => {
-			const [modelId] = line.trim().replace(/^→\s*/, "").split(" [");
-			return modelId?.trim() ?? "";
+		// 渲染出来的标签可能是模型名也可能是 id，两种都映射回模型本身，
+		// 这样断言只关心渲染顺序，不绑定具体展示哪种文本。
+		const labelToModel = new Map<string, typeof modelOne>();
+		for (const model of [modelOne, modelTwo, modelThree]) {
+			labelToModel.set(model.name, model);
+			labelToModel.set(model.id, model);
+		}
+		const renderedLabels = renderedLines.slice(0, 3).map((line) => {
+			const [label] = line.trim().replace(/^→\s*/, "").split(" [");
+			return label?.trim() ?? "";
 		});
 
-		expect(orderedIds).toEqual([modelTwo.id, modelOne.id, modelThree.id]);
+		const expectedOrder = [modelTwo, modelOne, modelThree];
+		expect(renderedLabels.map((label) => labelToModel.get(label))).toEqual(expectedOrder);
 	});
 });

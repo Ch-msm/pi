@@ -534,7 +534,11 @@ export async function findInitialModel(options: {
 
 	// 3. Try saved default from settings
 	if (defaultProvider && defaultModelId) {
-		const found = modelRegistry.find(defaultProvider, defaultModelId);
+		// model-discovery 注册的模型 id 带 provider 前缀，裸 id 精确匹配会落空，
+		// 这里补充限定引用解析，避免默认模型解析失败后落到“第一个可用模型”。
+		const found =
+			modelRegistry.find(defaultProvider, defaultModelId) ??
+			findExactModelReferenceMatch(defaultModelId, modelRegistry.getAll());
 		if (found) {
 			model = found;
 			if (defaultThinkingLevel) {

@@ -28,7 +28,7 @@ import type { ExtensionFactory } from "./core/extensions/types.ts";
 import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { KeybindingsManager } from "./core/keybindings.ts";
 import type { ModelRegistry } from "./core/model-registry.ts";
-import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
+import { findExactModelReferenceMatch, resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import {
@@ -387,7 +387,13 @@ function buildSessionOptions(
 		// Check if saved default is in scoped models - use it if so, otherwise first scoped model
 		const savedProvider = settingsManager.getDefaultProvider();
 		const savedModelId = settingsManager.getDefaultModel();
-		const savedModel = savedProvider && savedModelId ? modelRegistry.find(savedProvider, savedModelId) : undefined;
+		const savedModel =
+			savedProvider && savedModelId
+				? (modelRegistry.find(savedProvider, savedModelId) ??
+					// model-discovery 注册的模型 id 带 provider 前缀（如 "opencode-go/deepseek-v4.1-flash"），
+					// 按裸 id 精确匹配会落空，这里补充限定引用解析，避免启动时回退到 其它模型。
+					findExactModelReferenceMatch(savedModelId, modelRegistry.getAll()))
+				: undefined;
 		const savedInScope = savedModel ? scopedModels.find((sm) => modelsAreEqual(sm.model, savedModel)) : undefined;
 
 		if (savedInScope) {

@@ -35,6 +35,7 @@ import {
 	streamSimple,
 } from "@earendil-works/pi-ai";
 import { theme } from "../modes/interactive/theme/theme.ts";
+import { findExactModelReferenceMatch } from "./model-resolver.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
@@ -453,7 +454,10 @@ export class AgentSession {
 			id = modelId;
 		}
 
-		return this._modelRegistry.find(provider, id) ?? undefined;
+		// model-discovery 注册的模型 id 带 provider 前缀（如 "opencode-go/deepseek-v4.1-flash"），
+		// 注册表按裸 id 精确匹配会永远落空，导致压缩静默回退到当前会话模型；
+		// 这里补充限定引用解析（支持带前缀/带双前缀等口径）。
+		return this._modelRegistry.find(provider, id) ?? findExactModelReferenceMatch(modelId, this._modelRegistry.getAll());
 	}
 
 	/**

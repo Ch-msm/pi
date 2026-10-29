@@ -391,7 +391,7 @@ function buildSessionOptions(
 			savedProvider && savedModelId
 				? (modelRegistry.find(savedProvider, savedModelId) ??
 					// model-discovery 注册的模型 id 带 provider 前缀（如 "opencode-go/deepseek-v4.1-flash"），
-					// 按裸 id 精确匹配会落空，这里补充限定引用解析，避免启动时回退到 其它模型。
+					// 按裸 id 精确匹配会落空，这里补充限定引用解析，避免启动时回退到其它模型。
 					findExactModelReferenceMatch(savedModelId, modelRegistry.getAll()))
 				: undefined;
 		const savedInScope = savedModel ? scopedModels.find((sm) => modelsAreEqual(sm.model, savedModel)) : undefined;

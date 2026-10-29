@@ -10,7 +10,7 @@ import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
-import { findInitialModel } from "./model-resolver.ts";
+import { findExactModelReferenceMatch, findInitialModel } from "./model-resolver.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
@@ -193,7 +193,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	// If session has data, try to restore model from it
 	if (!model && hasExistingSession && existingSession.model) {
-		const restoredModel = modelRegistry.find(existingSession.model.provider, existingSession.model.modelId);
+		const restoredModel =
+			// model-discovery 注册的模型 id 带 provider 前缀，会话记录的 modelId 即注册表 id，
+			// 裸 id 精确匹配会落空；补充限定引用解析，否则每次恢复会话都还原失败回退。
+			modelRegistry.find(existingSession.model.provider, existingSession.model.modelId) ??
+			findExactModelReferenceMatch(existingSession.model.modelId, modelRegistry.getAll());
 		if (restoredModel && modelRegistry.hasConfiguredAuth(restoredModel)) {
 			model = restoredModel;
 		}

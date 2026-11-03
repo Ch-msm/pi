@@ -301,6 +301,10 @@ export interface AssistantMessage {
 	model: string;
 	responseModel?: string; // Concrete `chunk.model` when different from the requested `model` (e.g. OpenRouter `auto` -> `anthropic/...`)
 	responseId?: string; // Provider-specific response/message identifier when the upstream API exposes one
+	/** 最终请求体中的服务档位（在 onPayload 改写之后采集）。 */
+	requestedServiceTier?: string;
+	/** 最终响应原样报告的服务档位；缺失时不以请求档位补全。 */
+	responseServiceTier?: string;
 	diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
 	usage: Usage;
 	stopReason: StopReason;

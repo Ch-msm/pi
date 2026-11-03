@@ -356,6 +356,10 @@ export async function processResponsesStream<TApi extends Api>(
 		response: Extract<ResponseStreamEvent, { type: "response.completed" | "response.incomplete" }>["response"],
 	): void => {
 		sawTerminalResponseEvent = true;
+		// 展示用证据独立于计价推断，只保留终态响应实际报告的档位。
+		if (typeof response?.service_tier === "string") {
+			output.responseServiceTier = response.service_tier;
+		}
 		if (response?.id) {
 			output.responseId = response.id;
 		}

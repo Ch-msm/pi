@@ -66,6 +66,7 @@ function addIgnoreRules(ig: IgnoreMatcher, dir: string, rootDir: string): void {
 
 export interface SkillFrontmatter {
 	name?: string;
+	"display-name"?: string;
 	description?: string;
 	"disable-model-invocation"?: boolean;
 	[key: string]: unknown;
@@ -73,6 +74,7 @@ export interface SkillFrontmatter {
 
 export interface Skill {
 	name: string;
+	displayName?: string;
 	description: string;
 	filePath: string;
 	baseDir: string;
@@ -306,9 +308,15 @@ function loadSkillFromFile(
 			return { skill: null, diagnostics };
 		}
 
+		const displayName = frontmatter["display-name"];
+		if (displayName !== undefined && (typeof displayName !== "string" || !displayName.trim())) {
+			diagnostics.push({ type: "warning", message: "display-name must be a non-empty string", path: filePath });
+		}
+
 		return {
 			skill: {
 				name,
+				...(typeof displayName === "string" && displayName.trim() ? { displayName: displayName.trim() } : {}),
 				description: frontmatter.description,
 				filePath,
 				baseDir: skillDir,

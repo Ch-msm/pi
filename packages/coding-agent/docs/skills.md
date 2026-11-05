@@ -109,6 +109,7 @@ my-skill/
 ````markdown
 ---
 name: my-skill
+display-name: 我的技能
 description: What this skill does and when to use it. Be specific.
 ---
 
@@ -142,6 +143,7 @@ Per the [Agent Skills specification](https://agentskills.io/specification#frontm
 |-------|----------|-------------|
 | `name` | Yes | Max 64 chars. Lowercase a-z, 0-9, hyphens. Unlike the standard, Pi does not require this to match the parent directory because that standard requirement is suboptimal for shared skill directories. |
 | `description` | Yes | Max 1024 chars. What the skill does and when to use it. |
+| `display-name` | No | Non-empty display name, including Chinese or other languages. `$` completion shows `display-name · name` and matches either name; selection still inserts `$name`. |
 | `license` | No | License name or reference to bundled file. |
 | `compatibility` | No | Max 500 chars. Environment requirements. |
 | `metadata` | No | Arbitrary key-value mapping. |

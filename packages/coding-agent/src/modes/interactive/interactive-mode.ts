@@ -542,7 +542,7 @@ export class InteractiveMode {
 				skillNames.add(skill.name);
 				skillItems.push({
 					value: `$${skill.name}`,
-					label: skill.name,
+					label: skill.displayName ? `${skill.displayName} · ${skill.name}` : skill.name,
 					description: this.prefixAutocompleteDescription(skill.description, skill.sourceInfo),
 				});
 			}

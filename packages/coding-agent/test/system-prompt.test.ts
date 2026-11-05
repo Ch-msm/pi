@@ -57,6 +57,15 @@ describe("buildSystemPrompt", () => {
 				"- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory",
 			);
 		});
+		test("文档阅读限定到任务相关章节，必要时才读取完整契约", () => {
+			const prompt = buildSystemPrompt({ cwd: process.cwd() });
+
+			expect(prompt).toContain("locate and read relevant documentation sections and examples before implementing");
+			expect(prompt).toContain("read an entire file when its full contract is needed");
+			expect(prompt).toContain("Follow .md cross-references only when needed for the current task");
+			expect(prompt).toContain("do not recursively read unrelated documents");
+			expect(prompt).not.toContain("Always read pi .md files completely");
+		});
 	});
 
 	describe("custom tool snippets", () => {

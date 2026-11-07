@@ -10,7 +10,7 @@ export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
-	/** Model to use for compaction (e.g. "openai:gpt-4o-mini"), defaults to current session model */
+	/** 全局压缩模型引用（如 "provider/model-id"），未设置时使用当前会话模型。 */
 	model?: string;
 }
 
@@ -356,8 +356,12 @@ export class SettingsManager {
 		if (!content) {
 			return {};
 		}
-		const settings = JSON.parse(content);
-		return SettingsManager.migrateSettings(settings);
+		const settings = SettingsManager.migrateSettings(JSON.parse(content));
+		// 压缩模型仅从全局配置读取；项目仍可覆盖其他压缩参数。
+		if (scope === "project" && settings.compaction) {
+			delete settings.compaction.model;
+		}
+		return settings;
 	}
 
 	private static tryLoadFromStorage(
@@ -768,6 +772,23 @@ export class SettingsManager {
 
 	getCompactionModel(): string | undefined {
 		return this.settings.compaction?.model;
+	}
+
+	/** 保存全局压缩模型，写入成功后才修改内存设置。 */
+	setCompactionModel(model: string): Promise<void> {
+		const write = this.writeQueue.then(() => {
+			this.persistScopedSettings(
+				"global",
+				{ compaction: { model } },
+				new Set<keyof Settings>(["compaction"]),
+				new Map<keyof Settings, Set<string>>([["compaction", new Set(["model"])]]),
+			);
+			this.globalSettings.compaction = { ...this.globalSettings.compaction, model };
+			this.settings = { ...this.settings, compaction: { ...this.settings.compaction, model } };
+			this.globalSettingsLoadError = null;
+		});
+		this.writeQueue = write.catch((error) => this.recordError("global", error));
+		return write;
 	}
 
 	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number; model?: string } {

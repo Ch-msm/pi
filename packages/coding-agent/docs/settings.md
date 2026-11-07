@@ -83,6 +83,7 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the Pi version update check. Use `--off
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `compaction.enabled` | boolean | `true` | Enable auto-compaction |
+| `compaction.model` | string | 当前聊天模型 | 仅全局生效的默认压缩模型引用（如 `provider/model-id`）；`/compact --model` 更新全局配置，项目同名字段无效 |
 | `compaction.reserveTokens` | number | `16384` | Tokens reserved for LLM response |
 | `compaction.keepRecentTokens` | number | `20000` | Recent tokens to keep (not summarized) |
 

@@ -122,6 +122,155 @@ describe("AgentSession compaction characterization", () => {
 		expect(harness.session.messages[0]?.role).toBe("compactionSummary");
 	});
 
+	it("默认压缩模型优先读取配置，未配置时沿用聊天模型", async () => {
+		const harness = await createHarness({ models: [{ id: "chat" }, { id: "summary" }] });
+		harnesses.push(harness);
+		const chat = harness.getModel();
+		const summary = harness.getModel("summary")!;
+		expect(harness.session.compactionModel).toEqual(chat);
+
+		for (const reference of [`${summary.provider}/${summary.id}`, `${summary.provider}:${summary.id}`, summary.id]) {
+			harness.settingsManager.applyOverrides({
+				defaultProvider: summary.provider,
+				compaction: { model: reference },
+			});
+			expect(harness.session.compactionModel).toMatchObject({ provider: summary.provider, id: summary.id });
+			expect(harness.session.model).toEqual(chat);
+		}
+	});
+
+	it("本次压缩模型覆盖不会修改聊天模型、默认配置或后续手动及自动压缩", async () => {
+		const harness = await createHarness({
+			models: [{ id: "chat" }, { id: "configured-summary" }, { id: "temporary-summary" }],
+			settings: { compaction: { keepRecentTokens: 1 } },
+		});
+		harnesses.push(harness);
+		const chat = harness.getModel();
+		const configured = harness.getModel("configured-summary")!;
+		const temporary = harness.getModel("temporary-summary")!;
+		const reference = `${configured.provider}/${configured.id}`;
+		harness.settingsManager.applyOverrides({
+			defaultProvider: chat.provider,
+			defaultModel: chat.id,
+			compaction: { model: reference },
+		});
+		useSummaryStreamFn(harness, "本地模拟摘要");
+		const stream = vi.spyOn(harness.session.agent, "streamFn");
+		const auth = vi.spyOn(harness.session.modelRegistry, "getApiKeyAndHeaders");
+		seedCompactableSession(harness);
+
+		await harness.session.compact("保留验收标准", temporary);
+
+		expect(stream.mock.calls.length).toBeGreaterThan(0);
+		expect(stream.mock.calls.every(([model]) => model.id === temporary.id)).toBe(true);
+		expect(auth).toHaveBeenCalledWith(temporary);
+		expect(harness.session.model).toEqual(chat);
+		expect(harness.settingsManager.getDefaultProvider()).toBe(chat.provider);
+		expect(harness.settingsManager.getDefaultModel()).toBe(chat.id);
+		expect(harness.settingsManager.getCompactionModel()).toBe(reference);
+		expect(harness.session.compactionModel).toMatchObject({ id: configured.id });
+
+		for (const mode of ["manual", "auto"]) {
+			seedCompactableSession(harness);
+			const previousCalls = stream.mock.calls.length;
+			if (mode === "manual") {
+				await harness.session.compact();
+			} else {
+				const internals = harness.session as unknown as SessionWithCompactionInternals;
+				await internals._runAutoCompaction("threshold", false);
+			}
+			const calls = stream.mock.calls.slice(previousCalls);
+			expect(calls.length).toBeGreaterThan(0);
+			expect(calls.every(([model]) => model.id === configured.id)).toBe(true);
+		}
+		expect(harness.session.model).toEqual(chat);
+		expect(harness.settingsManager.getCompactionModel()).toBe(reference);
+	});
+
+	it("保存并重新加载默认压缩模型后，后续手动和自动压缩都沿用它", async () => {
+		const harness = await createHarness({
+			models: [{ id: "chat" }, { id: "saved-summary" }],
+			settings: { compaction: { keepRecentTokens: 1 } },
+		});
+		harnesses.push(harness);
+		const chat = harness.getModel();
+		const selected = harness.getModel("saved-summary")!;
+		await harness.settingsManager.setCompactionModel(`${selected.provider}/${selected.id}`);
+		await harness.settingsManager.reload();
+		useSummaryStreamFn(harness, "持久化模型生成的摘要");
+		const stream = vi.spyOn(harness.session.agent, "streamFn");
+
+		for (const mode of ["manual", "auto"]) {
+			seedCompactableSession(harness);
+			const previousCalls = stream.mock.calls.length;
+			if (mode === "manual") {
+				await harness.session.compact();
+			} else {
+				const internals = harness.session as unknown as SessionWithCompactionInternals;
+				await internals._runAutoCompaction("threshold", false);
+			}
+			const calls = stream.mock.calls.slice(previousCalls);
+			expect(calls.length).toBeGreaterThan(0);
+			expect(calls.every(([model]) => model.id === selected.id)).toBe(true);
+		}
+		expect(harness.session.model).toEqual(chat);
+	});
+
+	it("本次模型认证失败时报告错误、不切换模型，并恢复后续聊天事件", async () => {
+		const harness = await createHarness({ models: [{ id: "chat" }, { id: "temporary-summary" }] });
+		harnesses.push(harness);
+		const chat = harness.getModel();
+		const selected = harness.getModel("temporary-summary")!;
+		const reference = `${chat.provider}/${chat.id}`;
+		harness.settingsManager.applyOverrides({
+			defaultProvider: chat.provider,
+			defaultModel: chat.id,
+			compaction: { model: reference },
+		});
+		seedCompactableSession(harness);
+		const auth = vi.spyOn(harness.session.modelRegistry, "getApiKeyAndHeaders").mockResolvedValue({
+			ok: false,
+			error: "本次模型认证失败",
+		});
+
+		await expect(harness.session.compact(undefined, selected)).rejects.toThrow("本次模型认证失败");
+
+		expect(auth).toHaveBeenCalledOnce();
+		expect(auth).toHaveBeenCalledWith(selected);
+		expect(harness.eventsOfType("compaction_end")).toEqual([
+			expect.objectContaining({
+				reason: "manual",
+				aborted: false,
+				errorMessage: "Compaction failed: 本次模型认证失败",
+			}),
+		]);
+		expect(harness.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
+		expect(harness.session.model).toEqual(chat);
+		expect(harness.settingsManager.getDefaultModel()).toBe(chat.id);
+		expect(harness.settingsManager.getCompactionModel()).toBe(reference);
+
+		auth.mockRestore();
+		harness.setResponses([fauxAssistantMessage("认证错误后继续聊天")]);
+		await harness.session.prompt("继续");
+		expect(harness.eventsOfType("message_end")).toContainEqual(
+			expect.objectContaining({ message: expect.objectContaining({ role: "assistant" }) }),
+		);
+	});
+
+	it("没有聊天模型时仍可使用本次明确选择的模型压缩", async () => {
+		const harness = await createHarness({ settings: { compaction: { keepRecentTokens: 1 } } });
+		harnesses.push(harness);
+		const selected = harness.getModel();
+		seedCompactableSession(harness);
+		useSummaryStreamFn(harness, "仅使用本次选择的模型");
+		harness.session.agent.state.model = undefined as unknown as Model<string>;
+
+		await expect(harness.session.compact(undefined, selected)).resolves.toMatchObject({
+			summary: "仅使用本次选择的模型",
+		});
+		expect(harness.session.model).toBeUndefined();
+	});
+
 	it("throws when compacting without a model", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

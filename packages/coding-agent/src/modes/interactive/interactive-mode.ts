@@ -9,6 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
+	type Api,
 	type AssistantMessage,
 	getProviders,
 	type ImageContent,
@@ -102,6 +103,7 @@ import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-check.ts";
+import { getCompactArgumentCompletions, parseCompactCommandArguments } from "./compact-command.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
@@ -513,6 +515,18 @@ export class InteractiveMode {
 					label: item.id,
 					description: item.provider,
 				}));
+			};
+		}
+
+		const compactCommand = slashCommands.find((command) => command.name === "compact");
+		if (compactCommand) {
+			compactCommand.getArgumentCompletions = (prefix) => {
+				try {
+					return getCompactArgumentCompletions(prefix, () => this.session.modelRegistry.getAvailable());
+				} catch (error) {
+					this.showError(`无法补全压缩模型：${error instanceof Error ? error.message : String(error)}`);
+					return null;
+				}
 			};
 		}
 
@@ -1684,7 +1698,7 @@ export class InteractiveMode {
 			setThinkingLevel: (level) => {
 				this.session.setThinkingLevel(level);
 			},
-			isIdle: () => !this.session.isStreaming,
+			isIdle: () => !this.session.isProcessing,
 			signal: this.session.agent.signal,
 			abort: () => {
 				this.restoreQueuedMessagesToEditor({ abort: true });
@@ -2633,9 +2647,9 @@ export class InteractiveMode {
 				return;
 			}
 			if (text === "/compact" || text.startsWith("/compact ")) {
-				const customInstructions = text.startsWith("/compact ") ? text.slice(9).trim() : undefined;
+				const argumentsText = text.startsWith("/compact ") ? text.slice(9).trim() : undefined;
 				this.editor.setText("");
-				await this.handleCompactCommand(customInstructions);
+				await this.handleCompactCommand(argumentsText);
 				return;
 			}
 			if (text === "/reload") {
@@ -5084,7 +5098,7 @@ export class InteractiveMode {
 	// =========================================================================
 
 	private async handleReloadCommand(): Promise<void> {
-		if (this.session.isStreaming) {
+		if (this.session.isProcessing) {
 			this.showWarning("Wait for the current response to finish before reloading.");
 			return;
 		}
@@ -5745,10 +5759,28 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private async handleCompactCommand(customInstructions?: string): Promise<void> {
+	private async handleCompactCommand(argumentsText?: string): Promise<void> {
+		let customInstructions: string | undefined;
+		let model: Model<Api> | undefined;
+		try {
+			const parsed = parseCompactCommandArguments(argumentsText);
+			customInstructions = parsed.customInstructions;
+			this.session.modelRegistry.refresh();
+			if (parsed.modelReference) {
+				model = findExactModelReferenceMatch(parsed.modelReference, this.session.modelRegistry.getAll());
+				if (!model) {
+					throw new Error(`找不到唯一匹配的压缩模型：${parsed.modelReference}。请使用 provider/model-id。`);
+				}
+				await this.settingsManager.setCompactionModel(`${model.provider}/${model.id}`);
+				this.showStatus(`默认压缩模型已保存：${model.name} [${model.provider}]`);
+			}
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+			return;
+		}
+
 		const entries = this.sessionManager.getEntries();
 		const messageCount = entries.filter((e) => e.type === "message").length;
-
 		if (messageCount < 2) {
 			this.showWarning("Nothing to compact (no messages yet)");
 			return;
@@ -5761,7 +5793,7 @@ export class InteractiveMode {
 		this.statusContainer.clear();
 
 		try {
-			await this.session.compact(customInstructions);
+			await this.session.compact(customInstructions, model);
 		} catch {
 			// Ignore, will be emitted as an event
 		}

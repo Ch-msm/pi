@@ -184,7 +184,7 @@ describe("AgentSession prompt characterization", () => {
 			},
 		]);
 
-		await harness.session.prompt("/skill:test explain this");
+		await harness.session.prompt("$test explain this");
 
 		expect(expandedPrompt).toContain('<skill name="test" location="');
 		expect(expandedPrompt).toContain("Use the skill body.");

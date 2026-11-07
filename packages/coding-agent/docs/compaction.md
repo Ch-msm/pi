@@ -36,6 +36,26 @@ By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settin
 
 You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary.
 
+交互模式支持 `/compact [--model provider/model-id] [补充要求]`：
+
+```text
+/compact
+/compact 保留关键结论
+/compact --model DeepSeek/deepseek-flash
+/compact --model DeepSeek/deepseek-flash 保留验收标准
+```
+
+- 不带 `--model` 时直接使用 `compaction.model` 配置的模型；未配置时沿用当前聊天模型，不再弹出模型选择窗口。
+- 输入 `/compact --m` 可补全 `--model`，输入 `/compact --model ` 后会显示模型候选，继续输入可筛选候选。通过 Tab 或回车选中模型后，可输入空格和补充要求，再回车执行。
+- 同时支持 `--model=provider/model-id`。模型可使用唯一匹配的裸 ID；存在歧义时必须指定提供商，不会静默选择其他模型。
+- `--model` 必须放在补充要求之前。提交命令后，会保存为默认压缩模型，后续手动和自动压缩都沿用该选择，不切换聊天模型。浏览补全候选时不会保存。
+- 只写入全局 `~/.pi/agent/settings.json` 的 `compaction.model`。项目中的同名字段会被忽略，不会修改项目文件；项目级 token 参数等其他配置仍然有效。
+- 保存成功后才开始压缩；保存失败会报错，不启动压缩也不改变内存默认值。即使消息不足以压缩，或保存后的摘要请求失败，已确认的新默认模型仍会保留。
+- 模型引用含空格等特殊字符时，使用 JSON 双引号字符串；候选补全会自动处理引号和转义。
+- 补充要求以 `--` 开头时，先添加 `--` 分隔符，例如 `/compact -- --model 是需要保留的示例`。
+
+自动压缩以及非交互、RPC、扩展发起的压缩读取保存后的默认压缩模型，因此也会沿用 `/compact --model` 更新的配置。直接调用 `AgentSession.compact(customInstructions, modelOverride)` 时，`modelOverride` 仍只影响本次 API 调用，不写入配置。
+
 ### How It Works
 
 1. **Find cut point**: Walk backwards from newest message, accumulating token estimates until `keepRecentTokens` (default 20k, configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`) is reached
@@ -388,6 +408,7 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `enabled` | `true` | Enable auto-compaction |
+| `model` | 当前聊天模型 | 仅全局生效的默认压缩模型引用，例如 `provider/model-id`；可用 `/compact --model` 更新并持久化 |
 | `reserveTokens` | `16384` | Tokens to reserve for LLM response |
 | `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
 

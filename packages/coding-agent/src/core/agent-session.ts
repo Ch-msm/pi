@@ -24,7 +24,7 @@ import type {
 	AgentTool,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai";
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
@@ -426,6 +426,11 @@ export class AgentSession {
 		return result.ok ? { apiKey: result.apiKey, headers: result.headers } : {};
 	}
 
+	/** 默认压缩模型：优先使用压缩配置，否则沿用当前会话模型。 */
+	get compactionModel(): Model<Api> | undefined {
+		return this._resolveCompactionModel() ?? this.model;
+	}
+
 	/**
 	 * Resolve the model to use for compaction, if configured in settings.
 	 * Returns undefined if compaction.model is not set, the model string is invalid,
@@ -653,6 +658,8 @@ export class AgentSession {
 
 	// Track last assistant message for auto-compaction check
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
+	private _activeRequest: { messages: AgentMessage[]; aborted: boolean } | undefined;
+	private _disposed = false;
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
@@ -676,6 +683,11 @@ export class AgentSession {
 					}
 				}
 			}
+		}
+
+		if (event.type === "agent_end" && this._activeRequest) {
+			this._activeRequest.messages.push(...event.messages);
+			this._activeRequest.aborted ||= this.agent.signal?.aborted === true;
 		}
 
 		// Emit to extensions first
@@ -749,6 +761,7 @@ export class AgentSession {
 	};
 
 	private _willRetryAfterAgentEnd(event: Extract<AgentEvent, { type: "agent_end" }>): boolean {
+		if (this._activeRequest?.aborted || this.agent.signal?.aborted) return false;
 		const settings = this.settingsManager.getRetrySettings();
 		if (!settings.enabled || this._retryAttempt >= settings.maxRetries) {
 			return false;
@@ -917,6 +930,8 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		this._disposed = true;
+		if (this._activeRequest) this._activeRequest.aborted = true;
 		try {
 			this.abortRetry();
 			this.abortCompaction();
@@ -957,6 +972,11 @@ export class AgentSession {
 	/** Whether agent is currently streaming a response */
 	get isStreaming(): boolean {
 		return this.agent.state.isStreaming;
+	}
+
+	/** 整次请求仍在处理，包含模型输出、重试等待和压缩续跑。 */
+	get isProcessing(): boolean {
+		return this._activeRequest !== undefined || this.isStreaming;
 	}
 
 	/** Current effective system prompt (includes any per-turn extension modifications) */
@@ -1135,26 +1155,56 @@ export class AgentSession {
 	// Prompting
 	// =========================================================================
 
-	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+	/** 从启动准备开始占有请求，异步扩展钩子期间也不能重入。 */
+	private async _runAgentRequest(operation: () => Promise<void>): Promise<void> {
+		if (this._disposed) throw new Error("Agent session is disposed.");
+		if (this.isProcessing) throw new Error("Agent is already processing.");
+		const request = { messages: [] as AgentMessage[], aborted: false };
+		this._activeRequest = request;
+		let errorMessage: string | undefined;
 		try {
-			await this.agent.prompt(messages);
-			while (await this._handlePostAgentRun()) {
+			await operation();
+			while (true) {
+				const shouldContinue = await this._handlePostAgentRun();
+				// 后处理会让出执行权，释放请求前必须同步确认没有新入队的消息。
+				if (request.aborted || (!shouldContinue && !this.agent.hasQueuedMessages())) break;
 				await this.agent.continue();
 			}
+		} catch (error) {
+			request.aborted ||= error instanceof Error && error.name === "AbortError";
+			errorMessage = error instanceof Error ? error.message : String(error);
+			throw error;
 		} finally {
+			if (request.aborted && this._retryAttempt > 0) {
+				const attempt = this._retryAttempt;
+				this._retryAttempt = 0;
+				this._emit({ type: "auto_retry_end", success: false, attempt, finalError: "Retry cancelled" });
+			}
+			if (this._activeRequest === request) this._activeRequest = undefined;
 			this._flushPendingBashMessages();
+			if (!this._disposed) {
+				await this._extensionRunner.emit({ type: "agent_request_end", ...request, errorMessage });
+			}
 		}
+	}
+
+	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+		if (this._activeRequest?.aborted) return;
+		await this.agent.prompt(messages);
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
+		if (this._activeRequest?.aborted) return false;
 		if (!msg) {
 			return this.agent.hasQueuedMessages();
 		}
 
-		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {
-			return true;
+		if (this._isRetryableError(msg)) {
+			const retry = await this._prepareRetry(msg);
+			if (this._activeRequest?.aborted) return false;
+			if (retry) return true;
 		}
 
 		if (msg.stopReason === "error" && this._retryAttempt > 0) {
@@ -1167,9 +1217,9 @@ export class AgentSession {
 			this._retryAttempt = 0;
 		}
 
-		if (await this._checkCompaction(msg)) {
-			return true;
-		}
+		const compacted = await this._checkCompaction(msg);
+		if (this._activeRequest?.aborted) return false;
+		if (compacted) return true;
 
 		// The agent loop drains both queues before emitting agent_end. Any messages
 		// here were queued by agent_end extension handlers and need a continuation.
@@ -1180,15 +1230,17 @@ export class AgentSession {
 	 * Send a prompt to the agent.
 	 * - Handles extension commands (registered via pi.registerCommand) immediately, even during streaming
 	 * - Expands file-based prompt templates by default
-	 * - During streaming, queues via steer() or followUp() based on streamingBehavior option
-	 * - Validates model and API key before sending (when not streaming)
-	 * @throws Error if streaming and no streamingBehavior specified
+	 * - While processing a request (including retries), queues according to streamingBehavior
+	 * - Validates model and API key before starting a new request
+	 * @throws Error if processing and no streamingBehavior specified
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
-		let messages: AgentMessage[] | undefined;
+		let currentText = text;
+		let currentImages = options?.images;
+		let expandedText = text;
 
 		try {
 			// Handle extension commands first (execute immediately, even during streaming)
@@ -1203,14 +1255,12 @@ export class AgentSession {
 			}
 
 			// Emit input event for extension interception (before skill/template expansion)
-			let currentText = text;
-			let currentImages = options?.images;
 			if (this._extensionRunner.hasHandlers("input")) {
 				const inputResult = await this._extensionRunner.emitInput(
 					currentText,
 					currentImages,
 					options?.source ?? "interactive",
-					this.isStreaming ? options?.streamingBehavior : undefined,
+					this.isProcessing ? options?.streamingBehavior : undefined,
 				);
 				if (inputResult.action === "handled") {
 					preflightResult?.(true);
@@ -1223,14 +1273,14 @@ export class AgentSession {
 			}
 
 			// Expand inline skills ($name) and prompt templates
-			let expandedText = currentText;
+			expandedText = currentText;
 			if (expandPromptTemplates) {
 				expandedText = this._expandInlineSkills(expandedText);
 				expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 			}
 
-			// If streaming, queue via steer() or followUp() based on option
-			if (this.isStreaming) {
+			// 重试和压缩等待仍属于原请求，新消息必须继续排队。
+			if (this.isProcessing) {
 				if (!options?.streamingBehavior) {
 					throw new Error(
 						"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
@@ -1244,98 +1294,111 @@ export class AgentSession {
 				preflightResult?.(true);
 				return;
 			}
-
-			// Flush any pending bash messages before the new prompt
-			this._flushPendingBashMessages();
-
-			// Validate model
-			if (!this.model) {
-				throw new Error(formatNoModelSelectedMessage());
-			}
-
-			if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
-				const isOAuth = this._modelRegistry.isUsingOAuth(this.model);
-				if (isOAuth) {
-					throw new Error(
-						`Authentication failed for "${this.model.provider}". ` +
-							`Credentials may have expired or network is unavailable. ` +
-							`Run '/login ${this.model.provider}' to re-authenticate.`,
-					);
-				}
-				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
-			}
-
-			// Check if we need to compact before sending (catches aborted responses)
-			const lastAssistant = this._findLastAssistantMessage();
-			if (lastAssistant && (await this._checkCompaction(lastAssistant, false))) {
-				try {
-					await this.agent.continue();
-					while (await this._handlePostAgentRun()) {
-						await this.agent.continue();
-					}
-				} finally {
-					this._flushPendingBashMessages();
-				}
-			}
-
-			// Build messages array (custom message if any, then user message)
-			messages = [];
-
-			// Add user message
-			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
-			if (currentImages) {
-				userContent.push(...currentImages);
-			}
-			messages.push({
-				role: "user",
-				content: userContent,
-				timestamp: Date.now(),
-			});
-
-			// Inject any pending "nextTurn" messages as context alongside the user message
-			for (const msg of this._pendingNextTurnMessages) {
-				messages.push(msg);
-			}
-			this._pendingNextTurnMessages = [];
-
-			// Emit before_agent_start extension event
-			const result = await this._extensionRunner.emitBeforeAgentStart(
-				expandedText,
-				currentImages,
-				this._baseSystemPrompt,
-				this._baseSystemPromptOptions,
-			);
-			// Add all custom messages from extensions
-			if (result?.messages) {
-				for (const msg of result.messages) {
-					messages.push({
-						role: "custom",
-						customType: msg.customType,
-						content: msg.content,
-						display: msg.display,
-						details: msg.details,
-						timestamp: Date.now(),
-					});
-				}
-			}
-			// Apply extension-modified system prompt, or reset to base
-			if (result?.systemPrompt) {
-				this.agent.state.systemPrompt = result.systemPrompt;
-			} else {
-				// Ensure we're using the base prompt (in case previous turn had modifications)
-				this.agent.state.systemPrompt = this._baseSystemPrompt;
-			}
 		} catch (error) {
 			preflightResult?.(false);
 			throw error;
 		}
 
-		if (!messages) {
-			return;
-		}
+		await this._runAgentRequest(async () => {
+			const messages: AgentMessage[] = [];
+			let pendingNextTurnCount = 0;
+			try {
+				// Flush any pending bash messages before the new prompt
+				this._flushPendingBashMessages();
 
-		preflightResult?.(true);
-		await this._runAgentPrompt(messages);
+				// Validate model
+				if (!this.model) {
+					throw new Error(formatNoModelSelectedMessage());
+				}
+
+				if (!this._modelRegistry.hasConfiguredAuth(this.model)) {
+					const isOAuth = this._modelRegistry.isUsingOAuth(this.model);
+					if (isOAuth) {
+						throw new Error(
+							`Authentication failed for "${this.model.provider}". ` +
+								`Credentials may have expired or network is unavailable. ` +
+								`Run '/login ${this.model.provider}' to re-authenticate.`,
+						);
+					}
+					throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
+				}
+
+				// Check if we need to compact before sending (catches aborted responses)
+				const lastAssistant = this._findLastAssistantMessage();
+				if (lastAssistant && (await this._checkCompaction(lastAssistant, false)) && !this._activeRequest?.aborted) {
+					try {
+						await this.agent.continue();
+						while (await this._handlePostAgentRun()) {
+							await this.agent.continue();
+						}
+					} finally {
+						this._flushPendingBashMessages();
+					}
+				}
+
+				if (this._activeRequest?.aborted) {
+					preflightResult?.(false);
+					return;
+				}
+
+				// Build messages array (custom message if any, then user message)
+				const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
+				if (currentImages) {
+					userContent.push(...currentImages);
+				}
+				messages.push({
+					role: "user",
+					content: userContent,
+					timestamp: Date.now(),
+				});
+
+				// Inject any pending "nextTurn" messages as context alongside the user message
+				pendingNextTurnCount = this._pendingNextTurnMessages.length;
+				for (const msg of this._pendingNextTurnMessages) {
+					messages.push(msg);
+				}
+
+				// Emit before_agent_start extension event
+				const result = await this._extensionRunner.emitBeforeAgentStart(
+					expandedText,
+					currentImages,
+					this._baseSystemPrompt,
+					this._baseSystemPromptOptions,
+				);
+				// Add all custom messages from extensions
+				if (result?.messages) {
+					for (const msg of result.messages) {
+						messages.push({
+							role: "custom",
+							customType: msg.customType,
+							content: msg.content,
+							display: msg.display,
+							details: msg.details,
+							timestamp: Date.now(),
+						});
+					}
+				}
+				// Apply extension-modified system prompt, or reset to base
+				if (result?.systemPrompt) {
+					this.agent.state.systemPrompt = result.systemPrompt;
+				} else {
+					// Ensure we're using the base prompt (in case previous turn had modifications)
+					this.agent.state.systemPrompt = this._baseSystemPrompt;
+				}
+			} catch (error) {
+				preflightResult?.(false);
+				throw error;
+			}
+
+			if (this._activeRequest?.aborted) {
+				preflightResult?.(false);
+				return;
+			}
+			preflightResult?.(true);
+			if (this._activeRequest?.aborted) return;
+			this._pendingNextTurnMessages.splice(0, pendingNextTurnCount);
+			await this._runAgentPrompt(messages);
+		});
 	}
 
 	/**
@@ -1511,12 +1574,12 @@ export class AgentSession {
 	 * Send a custom message to the session. Creates a CustomMessageEntry.
 	 *
 	 * Handles three cases:
-	 * - Streaming: queues message, processed when loop pulls from queue
-	 * - Not streaming + triggerTurn: appends to state/session, starts new turn
-	 * - Not streaming + no trigger: appends to state/session, no turn
+	 * - Processing a request: queues the message, including during retry waits
+	 * - Idle + triggerTurn: appends to state/session, starts new turn
+	 * - Idle + no trigger: appends to state/session, no turn
 	 *
 	 * @param message Custom message with customType, content, display, details
-	 * @param options.triggerTurn If true and not streaming, triggers a new LLM turn
+	 * @param options.triggerTurn If true and idle, triggers a new LLM turn
 	 * @param options.deliverAs Delivery mode: "steer", "followUp", or "nextTurn"
 	 */
 	async sendCustomMessage<T = unknown>(
@@ -1533,33 +1596,35 @@ export class AgentSession {
 		} satisfies CustomMessage<T>;
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
-		} else if (this.isStreaming) {
+		} else if (this.isProcessing) {
 			if (options?.deliverAs === "followUp") {
 				this.agent.followUp(appMessage);
 			} else {
 				this.agent.steer(appMessage);
 			}
 		} else if (options?.triggerTurn) {
-			// Emit turn_start + message to UI before starting the agent turn, so the message
-			// appears immediately within a proper turn boundary. The agent loop will re-emit
-			// both turn_start and message_start/message_end for this message;
-			// _handleAgentEvent skips duplicates via _preEmittedTurnStart and _emittedCustomMessages.
-			this._preEmittedTurnStart = true;
-			this._emit({ type: "turn_start" });
-			this._emittedCustomMessages.add(appMessage);
-			this.sessionManager.appendCustomMessageEntry(
-				message.customType,
-				message.content,
-				message.display,
-				message.details,
-			);
-			this._emit({ type: "message_start", message: appMessage });
-			this._emit({ type: "message_end", message: appMessage });
-			try {
-				await this._runAgentPrompt(appMessage);
-			} finally {
-				this._preEmittedTurnStart = false;
-			}
+			await this._runAgentRequest(async () => {
+				try {
+					// Emit turn_start + message to UI before starting the agent turn, so the message
+					// appears immediately within a proper turn boundary. The agent loop will re-emit
+					// both turn_start and message_start/message_end for this message;
+					// _handleAgentEvent skips duplicates via _preEmittedTurnStart and _emittedCustomMessages.
+					this._preEmittedTurnStart = true;
+					this._emit({ type: "turn_start" });
+					this._emittedCustomMessages.add(appMessage);
+					this.sessionManager.appendCustomMessageEntry(
+						message.customType,
+						message.content,
+						message.display,
+						message.details,
+					);
+					this._emit({ type: "message_start", message: appMessage });
+					this._emit({ type: "message_end", message: appMessage });
+					await this._runAgentPrompt(appMessage);
+				} finally {
+					this._preEmittedTurnStart = false;
+				}
+			});
 		} else {
 			this.agent.state.messages.push(appMessage);
 			this.sessionManager.appendCustomMessageEntry(
@@ -1575,7 +1640,7 @@ export class AgentSession {
 
 	/**
 	 * Send a user message to the agent. Always triggers a turn.
-	 * When the agent is streaming, use deliverAs to specify how to queue the message.
+	 * While a request is processing (including retries), use deliverAs to specify how to queue the message.
 	 *
 	 * @param content User message content (string or content array)
 	 * @param options.deliverAs Delivery mode when streaming: "steer" or "followUp"
@@ -1605,7 +1670,7 @@ export class AgentSession {
 		}
 
 		if (
-			this.isStreaming &&
+			this.isProcessing &&
 			options?.deliverAs &&
 			text.startsWith("/") &&
 			this._extensionRunner.getCommand(this._extractSlashCommandName(text))
@@ -1666,6 +1731,10 @@ export class AgentSession {
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
+		if (this._activeRequest) {
+			this._activeRequest.aborted = true;
+			this._autoCompactionAbortController?.abort();
+		}
 		this.abortRetry();
 		this.agent.abort();
 		await this.agent.waitForIdle();
@@ -1896,15 +1965,16 @@ export class AgentSession {
 	 * Manually compact the session context.
 	 * Aborts current agent operation first.
 	 * @param customInstructions Optional instructions for the compaction summary
+	 * @param modelOverride 仅本次手动压缩使用的模型，不修改会话模型或默认配置
 	 */
-	async compact(customInstructions?: string): Promise<CompactionResult> {
+	async compact(customInstructions?: string, modelOverride?: Model<Api>): Promise<CompactionResult> {
 		this._disconnectFromAgent();
 		await this.abort();
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
 
 		try {
-			const compactModel = this._resolveCompactionModel() ?? this.model;
+			const compactModel = modelOverride ?? this.compactionModel;
 			if (!compactModel) {
 				throw new Error(formatNoModelSelectedMessage());
 			}
@@ -2033,6 +2103,7 @@ export class AgentSession {
 	 * Cancel in-progress compaction (manual or auto).
 	 */
 	abortCompaction(): void {
+		if (this._activeRequest && this._autoCompactionAbortController) this._activeRequest.aborted = true;
 		this._compactionAbortController?.abort();
 		this._autoCompactionAbortController?.abort();
 	}
@@ -2145,7 +2216,7 @@ export class AgentSession {
 		this._autoCompactionAbortController = new AbortController();
 
 		try {
-			const compactModel = this._resolveCompactionModel() ?? this.model;
+			const compactModel = this.compactionModel;
 			if (!compactModel) {
 				this._emit({
 					type: "compaction_end",
@@ -2509,7 +2580,7 @@ export class AgentSession {
 			},
 			{
 				getModel: () => this.model,
-				isIdle: () => !this.isStreaming,
+				isIdle: () => !this.isProcessing,
 				getSignal: () => this.agent.signal,
 				abort: () => {
 					if (this._extensionAbortHandler) {
@@ -2811,6 +2882,7 @@ export class AgentSession {
 	 * Cancel in-progress retry.
 	 */
 	abortRetry(): void {
+		if (this._activeRequest && this._retryAbortController) this._activeRequest.aborted = true;
 		this._retryAbortController?.abort();
 	}
 

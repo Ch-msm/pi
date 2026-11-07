@@ -299,7 +299,8 @@ user sends prompt ────────────────────�
   │   │                                            │       │
   │   └─► turn_end                                 │       │
   │                                                        │
-  └─► agent_end                                            │
+  ├─► agent_end（自动重试或压缩续跑可能再次进入执行循环）      │
+  └─► agent_request_end（整次请求最终结束）                   │
                                                            │
 user sends another prompt ◄────────────────────────────────┘
 
@@ -502,7 +503,7 @@ Inside `before_agent_start`, `event.systemPrompt` and `ctx.getSystemPrompt()` bo
 
 #### agent_start / agent_end
 
-Fired once per user prompt.
+每次 agent 执行循环触发。自动重试或压缩恢复可能导致同一次用户请求触发多次；需要判断整次请求最终结束时，使用 `agent_request_end`。
 
 ```typescript
 pi.on("agent_start", async (_event, ctx) => {});
@@ -511,6 +512,22 @@ pi.on("agent_end", async (event, ctx) => {
   // event.messages - messages from this prompt
 });
 ```
+
+#### agent_request_end
+
+整次请求结束后触发一次，已完成自动重试、压缩续跑和排队消息处理。用于完成通知等必须等待最终结果的扩展，不会改变原有 `agent_end` 的时机。
+
+```typescript
+pi.on("agent_request_end", async (event, ctx) => {
+  // event.messages：该请求各次执行循环产生的消息，包含最终助手回复
+  // event.aborted：是否手动中断，包含取消重试等待或自动压缩
+  // event.errorMessage：请求执行抛出的异常；模型错误仍在助手消息中
+});
+```
+
+该事件在 agent 已停止后触发，不能依赖 `ctx.signal` 判断本次请求是否被中断，应读取 `event.aborted`。扩展斜杠命令本身不触发模型执行时，不会产生该事件。
+
+请求占用状态通过 `session.isProcessing` 表示，包含重试等待和压缩续跑；`ctx.isIdle()` 在这些阶段也返回 `false`。后台结果应使用 `deliverAs: "steer"` 或 `"followUp"` 入队，不会启动重入请求。手动中断后不再自动续跑，尚未消费的排队消息保留供后续请求处理。
 
 #### turn_start / turn_end
 

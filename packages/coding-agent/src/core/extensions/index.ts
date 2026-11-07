@@ -22,6 +22,7 @@ export { ExtensionRunner, normalizeNewSessionOptions } from "./runner.ts";
 export type {
 	AfterProviderResponseEvent,
 	AgentEndEvent,
+	AgentRequestEndEvent,
 	AgentStartEvent,
 	// Re-exports
 	AgentToolResult,

@@ -671,6 +671,15 @@ export interface AgentEndEvent {
 	messages: AgentMessage[];
 }
 
+/** 一次完整请求结束，包含自动重试、压缩续跑和排队消息的处理。 */
+export interface AgentRequestEndEvent {
+	type: "agent_request_end";
+	messages: AgentMessage[];
+	aborted: boolean;
+	/** 请求执行抛出的异常；模型返回的错误仍在助手消息中。 */
+	errorMessage?: string;
+}
+
 /** Fired at the start of each turn */
 export interface TurnStartEvent {
 	type: "turn_start";
@@ -985,6 +994,7 @@ export type ExtensionEvent =
 	| BeforeAgentStartEvent
 	| AgentStartEvent
 	| AgentEndEvent
+	| AgentRequestEndEvent
 	| TurnStartEvent
 	| TurnEndEvent
 	| MessageStartEvent
@@ -1141,6 +1151,7 @@ export interface ExtensionAPI {
 	on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
 	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
 	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): void;
+	on(event: "agent_request_end", handler: ExtensionHandler<AgentRequestEndEvent>): void;
 	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): void;
 	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent>): void;
 	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): void;

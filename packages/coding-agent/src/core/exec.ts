@@ -94,7 +94,8 @@ export async function execCommand(
 				if (options?.signal) {
 					options.signal.removeEventListener("abort", killProcess);
 				}
-				resolve({ stdout, stderr, code: code ?? 0, killed });
+				// 信号终止没有正常退出码，不能被视为执行成功。
+				resolve({ stdout, stderr, code: code ?? 1, killed: killed || proc.signalCode !== null });
 			})
 			.catch((_err) => {
 				if (timeoutId) clearTimeout(timeoutId);

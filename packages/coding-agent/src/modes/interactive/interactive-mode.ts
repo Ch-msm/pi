@@ -97,6 +97,7 @@ import { hasProjectTrustInputs, ProjectTrustStore } from "../../core/trust-manag
 import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
+import { appendCrashLog } from "../../utils/crash-log.ts";
 import { parseGitUrl } from "../../utils/git.ts";
 import { getCwdRelativePath } from "../../utils/paths.ts";
 import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
@@ -3484,6 +3485,12 @@ export class InteractiveMode {
 			process.exit(1);
 		}
 		this.isShuttingDown = true;
+		try {
+			// 崩溃堆栈持久化：终端输出在进程退出后会丢失，落盘便于事后定位。
+			appendCrashLog(error);
+		} catch {
+			// 崩溃日志写入失败不能阻止终端恢复与退出。
+		}
 		try {
 			this.unregisterSignalHandlers();
 		} catch {}

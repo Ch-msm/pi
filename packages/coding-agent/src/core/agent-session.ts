@@ -662,6 +662,8 @@ export class AgentSession {
 	// Track last assistant message for auto-compaction check
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
 	private _activeRequest: { messages: AgentMessage[]; aborted: boolean } | undefined;
+	/** 输入预处理独立于模型请求，排队输入也可能在原请求结束后仍等待钩子。 */
+	private _inputAbortControllers = new Set<AbortController>();
 	private _disposed = false;
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
@@ -934,6 +936,7 @@ export class AgentSession {
 	 */
 	dispose(): void {
 		this._disposed = true;
+		for (const controller of this._inputAbortControllers) controller.abort();
 		if (this._activeRequest) this._activeRequest.aborted = true;
 		try {
 			this.abortRetry();
@@ -977,8 +980,13 @@ export class AgentSession {
 		return this.agent.state.isStreaming;
 	}
 
-	/** 整次请求仍在处理，包含模型输出、重试等待和压缩续跑。 */
+	/** 输入预处理或整次模型请求仍在处理，包含重试等待和压缩续跑。 */
 	get isProcessing(): boolean {
+		return this._inputAbortControllers.size > 0 || this._isAgentProcessing;
+	}
+
+	/** 仅模型请求占用执行槽；输入钩子仍可自行处理输入或将其转换为其他请求。 */
+	private get _isAgentProcessing(): boolean {
 		return this._activeRequest !== undefined || this.isStreaming;
 	}
 
@@ -1161,7 +1169,7 @@ export class AgentSession {
 	/** 从启动准备开始占有请求，异步扩展钩子期间也不能重入。 */
 	private async _runAgentRequest(operation: () => Promise<void>): Promise<void> {
 		if (this._disposed) throw new Error("Agent session is disposed.");
-		if (this.isProcessing) throw new Error("Agent is already processing.");
+		if (this._isAgentProcessing) throw new Error("Agent is already processing.");
 		const request = { messages: [] as AgentMessage[], aborted: false };
 		this._activeRequest = request;
 		let errorMessage: string | undefined;
@@ -1230,6 +1238,7 @@ export class AgentSession {
 	}
 
 	private _assertCanPrompt(): void {
+		if (this._disposed) throw new Error("Agent session is disposed.");
 		if (this._compactionAbortController || this._branchSummaryAbortController) {
 			throw new Error("Cannot send a message during manual compaction or branch summarization.");
 		}
@@ -1250,11 +1259,16 @@ export class AgentSession {
 		let currentText = text;
 		let currentImages = options?.images;
 		let expandedText = text;
+		const inputController = new AbortController();
 
 		try {
 			// Handle extension commands first (execute immediately, even during streaming)
 			// Extension commands manage their own LLM interaction via pi.sendMessage()
-			if (expandPromptTemplates && text.startsWith("/")) {
+			if (
+				expandPromptTemplates &&
+				text.startsWith("/") &&
+				this._extensionRunner.getCommand(this._extractSlashCommandName(text))
+			) {
 				const handled = await this._tryExecuteExtensionCommand(text);
 				if (handled) {
 					// Extension command executed, no prompt to send
@@ -1265,27 +1279,32 @@ export class AgentSession {
 			}
 
 			this._assertCanPrompt();
-			// Emit input event for extension interception (before skill/template expansion)
-			if (this._extensionRunner.hasHandlers("input")) {
-				const inputResult = await this._extensionRunner.emitInput(
-					currentText,
-					currentImages,
-					options?.source ?? "interactive",
-					this.isProcessing ? options?.streamingBehavior : undefined,
-				);
-				if (inputResult.action === "handled") {
-					preflightResult?.(true);
-					options?.onInputAccepted?.();
-					return;
-				}
-				if (inputResult.action === "transform") {
-					currentText = inputResult.text;
-					currentImages = inputResult.images ?? currentImages;
-				}
-			}
+			this._inputAbortControllers.add(inputController);
+			// 输入预处理也占用忙碌状态，但不会产生一个虚假的模型请求或请求结束事件。
+			const inputResult = this._extensionRunner.hasHandlers("input")
+				? await this._extensionRunner.emitInput(
+						currentText,
+						currentImages,
+						options?.source ?? "interactive",
+						this._isAgentProcessing ? options?.streamingBehavior : undefined,
+					)
+				: undefined;
 
-			// input 钩子可能异步等待；返回后必须重新检查是否已开始手动压缩。
+			// 钩子可能异步等待；返回后先校验互斥和本次输入的取消状态，再接收结果。
 			this._assertCanPrompt();
+			if (inputController.signal.aborted) {
+				preflightResult?.(false);
+				return;
+			}
+			if (inputResult?.action === "handled") {
+				preflightResult?.(true);
+				options?.onInputAccepted?.();
+				return;
+			}
+			if (inputResult?.action === "transform") {
+				currentText = inputResult.text;
+				currentImages = inputResult.images ?? currentImages;
+			}
 			// Expand inline skills ($name) and prompt templates
 			expandedText = currentText;
 			if (expandPromptTemplates) {
@@ -1294,7 +1313,7 @@ export class AgentSession {
 			}
 
 			// 重试和压缩等待仍属于原请求，新消息必须继续排队。
-			if (this.isProcessing) {
+			if (this._isAgentProcessing) {
 				if (!options?.streamingBehavior) {
 					throw new Error(
 						"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
@@ -1312,6 +1331,8 @@ export class AgentSession {
 		} catch (error) {
 			preflightResult?.(false);
 			throw error;
+		} finally {
+			this._inputAbortControllers.delete(inputController);
 		}
 
 		await this._runAgentRequest(async () => {
@@ -1624,7 +1645,7 @@ export class AgentSession {
 		} satisfies CustomMessage<T>;
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
-		} else if (this.isProcessing) {
+		} else if (this._isAgentProcessing) {
 			if (options?.deliverAs === "followUp") {
 				this.agent.followUp(appMessage);
 			} else {
@@ -1706,7 +1727,7 @@ export class AgentSession {
 			}
 
 			if (
-				this.isProcessing &&
+				this._isAgentProcessing &&
 				options?.deliverAs &&
 				text.startsWith("/") &&
 				this._extensionRunner.getCommand(this._extractSlashCommandName(text))
@@ -1779,6 +1800,7 @@ export class AgentSession {
 	}
 
 	private async _abortAgentRequest(): Promise<void> {
+		for (const controller of this._inputAbortControllers) controller.abort();
 		if (this._activeRequest) this._activeRequest.aborted = true;
 		this.abortRetry();
 		this.agent.abort();
@@ -2016,9 +2038,10 @@ export class AgentSession {
 		if (this.isCompacting) throw new Error("Compaction or branch summarization is already running.");
 		// 在首次异步等待前占用压缩状态，阻止并发输入和重复压缩。
 		this._compactionAbortController = new AbortController();
-		this._emit({ type: "compaction_start", reason: "manual" });
+		let endEvent: Extract<AgentSessionEvent, { type: "compaction_end" }> | undefined;
 
 		try {
+			this._emit({ type: "compaction_start", reason: "manual" });
 			await this._abortAgentRequest();
 			if (this._compactionAbortController.signal.aborted) throw new Error("Compaction cancelled");
 			this._disconnectFromAgent();
@@ -2121,29 +2144,31 @@ export class AgentSession {
 				tokensBefore,
 				details,
 			};
-			this._emit({
+			endEvent = {
 				type: "compaction_end",
 				reason: "manual",
 				result: compactionResult,
 				aborted: false,
 				willRetry: false,
-			});
+			};
 			return compactionResult;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			const aborted = message === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
-			this._emit({
+			endEvent = {
 				type: "compaction_end",
 				reason: "manual",
 				result: undefined,
 				aborted,
 				willRetry: false,
 				errorMessage: aborted ? undefined : `Compaction failed: ${message}`,
-			});
+			};
 			throw error;
 		} finally {
 			this._compactionAbortController = undefined;
 			this._reconnectToAgent();
+			// 结束监听器可立即续发输入或再次压缩；必须先完成本轮清理，不能覆盖新操作。
+			if (endEvent) this._emit(endEvent);
 		}
 	}
 
@@ -3126,8 +3151,10 @@ export class AgentSession {
 			label,
 		};
 
+		if (this.isCompacting) throw new Error("Compaction or branch summarization is already running.");
 		// Set up abort controller for summarization
-		this._branchSummaryAbortController = new AbortController();
+		const abortController = new AbortController();
+		this._branchSummaryAbortController = abortController;
 
 		try {
 			let extensionSummary: { summary: string; details?: unknown } | undefined;
@@ -3138,9 +3165,10 @@ export class AgentSession {
 				const result = (await this._extensionRunner.emit({
 					type: "session_before_tree",
 					preparation,
-					signal: this._branchSummaryAbortController.signal,
+					signal: abortController.signal,
 				})) as SessionBeforeTreeResult | undefined;
 
+				if (abortController.signal.aborted) return { cancelled: true, aborted: true };
 				if (result?.cancel) {
 					return { cancelled: true };
 				}
@@ -3173,7 +3201,7 @@ export class AgentSession {
 					model,
 					apiKey,
 					headers,
-					signal: this._branchSummaryAbortController.signal,
+					signal: abortController.signal,
 					customInstructions,
 					replaceInstructions,
 					reserveTokens: branchSummarySettings.reserveTokens,
@@ -3194,6 +3222,9 @@ export class AgentSession {
 				summaryText = extensionSummary.summary;
 				summaryDetails = extensionSummary.details;
 			}
+
+			// 默认生成和自定义钩子均可能在取消后才返回；任何分支写入之前都必须校验。
+			if (abortController.signal.aborted) return { cancelled: true, aborted: true };
 
 			// Determine the new leaf position based on target type
 			let newLeafId: string | null;

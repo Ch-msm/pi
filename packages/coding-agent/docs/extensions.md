@@ -527,7 +527,7 @@ pi.on("agent_request_end", async (event, ctx) => {
 
 该事件在 agent 已停止后触发，不能依赖 `ctx.signal` 判断本次请求是否被中断，应读取 `event.aborted`。扩展斜杠命令本身不触发模型执行时，不会产生该事件。
 
-请求占用状态通过 `session.isProcessing` 表示，包含重试等待和压缩续跑；`ctx.isIdle()` 在这些阶段也返回 `false`。后台结果应使用 `deliverAs: "steer"` 或 `"followUp"` 入队，不会启动重入请求。手动中断后不再自动续跑，尚未消费的排队消息保留供后续请求处理。
+请求占用状态通过 `session.isProcessing` 表示，包含异步输入预处理、重试等待和压缩续跑；`ctx.isIdle()` 在这些阶段也返回 `false`。输入预处理与模型请求分别登记：仅由输入钩子处理、未启动模型的消息不会产生虚假的 `agent_request_end`。后台结果应使用 `deliverAs: "steer"` 或 `"followUp"` 入队，不会启动重入请求。手动中断后不再自动续跑，尚未消费的排队消息保留供后续请求处理。
 
 #### turn_start / turn_end
 
@@ -934,7 +934,7 @@ pi.on("tool_result", async (event, ctx) => {
 
 Control flow helpers.
 
-`ctx.isIdle()` 在请求处理、重试等待、自动或手动压缩以及分支摘要期间均返回 `false`。`ctx.abort()` 同时取消当前请求、压缩和分支摘要；模式自定义的取消处理仍会执行，不会绕过核心取消。
+`ctx.isIdle()` 在异步输入预处理、请求处理、重试等待、自动或手动压缩以及分支摘要期间均返回 `false`。`ctx.abort()` 同时取消待处理输入、当前请求、压缩和分支摘要；模式自定义的取消处理仍会执行，不会绕过核心取消。即使原请求已经结束，仍可取消尚未完成预处理的排队输入。SDK 不会强行终止扩展内部的异步操作，但会拒绝取消后迟到的输入或分支摘要结果，避免继续调用模型或写入分支。
 
 ### ctx.shutdown()
 

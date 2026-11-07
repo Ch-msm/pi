@@ -1,6 +1,8 @@
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AgentSessionEvent } from "../../src/core/agent-session.ts";
 import type { ExtensionAPI, ExtensionContext, SessionBeforeCompactEvent } from "../../src/core/extensions/types.ts";
+import { InteractiveMode } from "../../src/modes/interactive/interactive-mode.ts";
 import { createHarness, type Harness, type HarnessOptions } from "./harness.ts";
 
 const harnesses: Harness[] = [];
@@ -327,6 +329,280 @@ describe("手动压缩与远程输入互斥", () => {
 			releaseInput();
 			f.release();
 			await input.catch(() => {});
+			await operation.catch(() => {});
+		}
+	});
+});
+
+describe("异步输入预处理的取消", () => {
+	it.each(["continue", "transform", "handled"] as const)(
+		"等待 input 钩子时已占用状态，停止后不接收迟到的 %s 结果",
+		async (action) => {
+			let entered!: () => void;
+			let release!: () => void;
+			const ready = new Promise<void>((resolve) => {
+				entered = resolve;
+			});
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const { harness, pi, ctx } = await setup({
+				extensionFactories: [
+					(api) => {
+						api.on("input", async () => {
+							entered();
+							await gate;
+							return action === "transform" ? { action, text: "转换后的输入" } : { action };
+						});
+					},
+				],
+			});
+			harness.setResponses([fauxAssistantMessage("不应调用模型")]);
+			const receipts: boolean[] = [];
+			const operation = pi.sendUserMessage("待取消输入", { onInputResult: (accepted) => receipts.push(accepted) });
+			try {
+				await ready;
+				const busy = harness.session.isProcessing;
+				const idle = ctx.isIdle();
+				ctx.abort();
+				release();
+				await operation;
+				expect(receipts).toEqual([false]);
+				expect(busy).toBe(true);
+				expect(idle).toBe(false);
+				expect(ctx.isIdle()).toBe(true);
+				expect(harness.faux.state.callCount).toBe(0);
+				expect(harness.sessionManager.getBranch()).toHaveLength(0);
+			} finally {
+				release();
+				await operation.catch(() => {});
+			}
+		},
+	);
+
+	it.each(["user", "custom"] as const)(
+		"输入钩子可以自行转发为 %s 消息，不制造重入或虚假的请求结束事件",
+		async (kind) => {
+			const requestEnd = vi.fn();
+			const { harness, pi, ctx } = await setup({
+				extensionFactories: [
+					(api) => {
+						api.on("input", async (event) => {
+							if (event.text !== "原始输入") return { action: "continue" };
+							if (kind === "user") await api.sendUserMessage("转发后的输入");
+							else
+								await harness.session.sendCustomMessage(
+									{ customType: "forwarded", content: "转发后的输入", display: true },
+									{ triggerTurn: true },
+								);
+							return { action: "handled" };
+						});
+						api.on("agent_request_end", requestEnd);
+					},
+				],
+			});
+			harness.setResponses([fauxAssistantMessage("转发后的回复")]);
+			const receipts: boolean[] = [];
+			await pi.sendUserMessage("原始输入", { onInputResult: (accepted) => receipts.push(accepted) });
+			expect(receipts).toEqual([true]);
+			expect(harness.faux.state.callCount).toBe(1);
+			expect(requestEnd).toHaveBeenCalledOnce();
+			expect(ctx.isIdle()).toBe(true);
+			expect(harness.session.messages.map((message) => message.role)).toEqual([
+				kind === "user" ? "user" : "custom",
+				"assistant",
+			]);
+		},
+	);
+
+	it("主请求结束后，仍能取消正在预处理的排队输入", async () => {
+		let releaseRequest!: () => void;
+		let requestEntered!: () => void;
+		let releaseInput!: () => void;
+		let inputEntered!: () => void;
+		const requestGate = new Promise<void>((resolve) => {
+			releaseRequest = resolve;
+		});
+		const requestReady = new Promise<void>((resolve) => {
+			requestEntered = resolve;
+		});
+		const inputGate = new Promise<void>((resolve) => {
+			releaseInput = resolve;
+		});
+		const inputReady = new Promise<void>((resolve) => {
+			inputEntered = resolve;
+		});
+		const { harness, pi, ctx } = await setup({
+			extensionFactories: [
+				(api) => {
+					api.on("before_agent_start", async () => {
+						requestEntered();
+						await requestGate;
+					});
+					api.on("input", async (event) => {
+						if (event.text === "延迟排队输入") {
+							inputEntered();
+							await inputGate;
+						}
+						return { action: "continue" };
+					});
+				},
+			],
+		});
+		harness.setResponses([fauxAssistantMessage("主请求回复"), fauxAssistantMessage("不应回复排队输入")]);
+		const running = harness.session.prompt("主请求");
+		await requestReady;
+		const receipts: boolean[] = [];
+		const queued = pi.sendUserMessage("延迟排队输入", {
+			deliverAs: "followUp",
+			onInputResult: (accepted) => receipts.push(accepted),
+		});
+		try {
+			await inputReady;
+			releaseRequest();
+			await running;
+			const idle = ctx.isIdle();
+			ctx.abort();
+			releaseInput();
+			await queued;
+			expect(receipts).toEqual([false]);
+			expect(idle).toBe(false);
+			expect(ctx.isIdle()).toBe(true);
+			expect(harness.faux.state.callCount).toBe(1);
+			expect(harness.session.pendingMessageCount).toBe(0);
+		} finally {
+			releaseRequest();
+			releaseInput();
+			await running.catch(() => {});
+			await queued.catch(() => {});
+		}
+	});
+});
+
+describe("压缩收尾后续发终端队列", () => {
+	it.each([false, true])("结束事件发出前已恢复空闲及持久化订阅，cancelled=%s", async (cancelled) => {
+		const f = await compactionFixture();
+		const promptSpy = vi.spyOn(f.harness.session, "prompt");
+		const flushQueue = Reflect.get(InteractiveMode.prototype, "flushCompactionQueue") as (
+			this: typeof view,
+			options?: { willRetry?: boolean },
+		) => Promise<void>;
+		let flushed: Promise<void> | undefined;
+		const view = {
+			session: f.harness.session,
+			compactionQueuedMessages: [{ text: "压缩期间排队的输入", mode: "followUp" }],
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			autoCompactionEscapeHandler: undefined,
+			autoCompactionLoader: undefined,
+			defaultEditor: {},
+			statusContainer: { clear: vi.fn() },
+			chatContainer: { clear: vi.fn() },
+			rebuildChatFromMessages: vi.fn(),
+			addMessageToChat: vi.fn(),
+			showError: vi.fn(),
+			showStatus: vi.fn(),
+			restoreWorkingLoaderIfStreaming: vi.fn(),
+			updatePendingMessagesDisplay: vi.fn(),
+			isExtensionCommand: () => false,
+			settingsManager: { getShowTerminalProgress: () => false },
+			ui: { requestRender: vi.fn(), terminal: { setProgress: vi.fn() } },
+			flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void> {
+				flushed = flushQueue.call(view, options);
+				return flushed;
+			},
+		};
+		const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+			this: typeof view,
+			event: AgentSessionEvent,
+		) => Promise<void>;
+		const states: boolean[] = [];
+		f.harness.session.subscribe((event) => {
+			if (event.type === "compaction_end") {
+				states.push(f.ctx.isIdle());
+				void handleEvent.call(view, event);
+			}
+		});
+		f.harness.setResponses([fauxAssistantMessage("排队输入的回复")]);
+		const operation = f.harness.session.compact();
+		try {
+			await f.ready;
+			if (cancelled) f.ctx.abort();
+			f.release();
+			if (cancelled) await expect(operation).rejects.toThrow("Compaction cancelled");
+			else await operation;
+			await flushed;
+			const result = promptSpy.mock.results[0];
+			expect(result?.type).toBe("return");
+			if (result?.type === "return") await result.value.catch(() => {});
+			expect(states).toEqual([true]);
+			expect(view.compactionQueuedMessages).toEqual([]);
+			expect(
+				view.showError.mock.calls.some(([message]) => String(message).startsWith("Failed to send queued")),
+			).toBe(false);
+			expect(
+				f.harness.sessionManager
+					.getBranch()
+					.some(
+						(entry) =>
+							entry.type === "message" &&
+							entry.message.role === "user" &&
+							JSON.stringify(entry.message.content).includes("压缩期间排队的输入"),
+					),
+			).toBe(true);
+			expect(f.ctx.isIdle()).toBe(true);
+		} finally {
+			f.release();
+			await operation.catch(() => {});
+		}
+	});
+});
+
+describe("分支导航提交前的取消", () => {
+	it.each([false, true])("忽略取消后迟到的导航钩子结果，不切换分支，customSummary=%s", async (customSummary) => {
+		let entered!: () => void;
+		let release!: () => void;
+		const ready = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const onTree = vi.fn();
+		const { harness, ctx } = await setup({
+			extensionFactories: [
+				(api) => {
+					api.on("session_before_tree", async () => {
+						entered();
+						await gate;
+						return customSummary ? { summary: { summary: "不应保存的摘要" } } : undefined;
+					});
+					api.on("session_tree", onTree);
+				},
+			],
+		});
+		harness.setResponses([fauxAssistantMessage("已有回复")]);
+		await harness.session.prompt("已有用户消息");
+		const branch = harness.sessionManager.getBranch();
+		const target = branch.find((entry) => entry.type === "message" && entry.message.role === "user");
+		expect(target).toBeDefined();
+		const leaf = harness.sessionManager.getLeafId();
+		const operation = harness.session.navigateTree(target!.id, { summarize: customSummary });
+		try {
+			await ready;
+			await expect(harness.session.navigateTree(target!.id, { summarize: customSummary })).rejects.toThrow(
+				/already running/,
+			);
+			await expect(harness.session.compact()).rejects.toThrow(/already running/);
+			ctx.abort();
+			release();
+			expect(await operation).toEqual({ cancelled: true, aborted: true });
+			expect(harness.sessionManager.getLeafId()).toBe(leaf);
+			expect(harness.sessionManager.getBranch()).toEqual(branch);
+			expect(onTree).not.toHaveBeenCalled();
+			expect(ctx.isIdle()).toBe(true);
+		} finally {
+			release();
 			await operation.catch(() => {});
 		}
 	});

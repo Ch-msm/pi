@@ -318,7 +318,7 @@ export interface ExtensionContext {
 	getThinkingLevel(): ThinkingLevel;
 	/** Set thinking level (clamped to model capabilities). */
 	setThinkingLevel(level: ThinkingLevel): void;
-	/** Whether the agent is idle (not streaming) */
+	/** 请求、压缩和分支摘要均未运行时才为空闲。 */
 	isIdle(): boolean;
 	/** The current abort signal, or undefined when the agent is not streaming. */
 	signal: AbortSignal | undefined;
@@ -401,10 +401,7 @@ export interface ReplacedSessionContext extends ExtensionCommandContext {
 		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
 	): Promise<void>;
 
-	sendUserMessage(
-		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
-	): Promise<void>;
+	sendUserMessage(content: string | (TextContent | ImageContent)[], options?: SendUserMessageOptions): Promise<void>;
 }
 
 // ============================================================================
@@ -1226,11 +1223,9 @@ export interface ExtensionAPI {
 	 * Send a user message to the agent. Always triggers a turn.
 	 * When the agent is streaming, use deliverAs to specify how to queue the message.
 	 * Resolves after the message has been queued or the idle turn has completed.
+	 * 通过 onInputResult 区分正式接收与接收前取消，不能只依据 Promise 正常返回。
 	 */
-	sendUserMessage(
-		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
-	): Promise<void>;
+	sendUserMessage(content: string | (TextContent | ImageContent)[], options?: SendUserMessageOptions): Promise<void>;
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
 	appendEntry<T = unknown>(customType: string, data?: T): void;
@@ -1452,9 +1447,15 @@ export type SendMessageHandler = <T = unknown>(
 	options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
 ) => void;
 
+export interface SendUserMessageOptions {
+	deliverAs?: "steer" | "followUp";
+	/** 仅回报一次：已处理、排队或持久化时为 true；接收前取消或失败时为 false。 */
+	onInputResult?: (accepted: boolean) => void;
+}
+
 export type SendUserMessageHandler = (
 	content: string | (TextContent | ImageContent)[],
-	options?: { deliverAs?: "steer" | "followUp" },
+	options?: SendUserMessageOptions,
 ) => Promise<void>;
 
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;

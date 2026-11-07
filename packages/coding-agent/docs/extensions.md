@@ -934,6 +934,8 @@ pi.on("tool_result", async (event, ctx) => {
 
 Control flow helpers.
 
+`ctx.isIdle()` 在请求处理、重试等待、自动或手动压缩以及分支摘要期间均返回 `false`。`ctx.abort()` 同时取消当前请求、压缩和分支摘要；模式自定义的取消处理仍会执行，不会绕过核心取消。
+
 ### ctx.shutdown()
 
 Request a graceful shutdown of pi.
@@ -1358,9 +1360,14 @@ pi.sendUserMessage("And then summarize", { deliverAs: "followUp" });
 - `deliverAs` - Required when agent is streaming:
   - `"steer"` - Queues the message for delivery after the current assistant turn finishes executing its tool calls
   - `"followUp"` - Waits for agent to finish all tools
+- `onInputResult(accepted)` - 输入接收回执，仅调用一次。被扩展正式处理、成功排队或用户消息持久化后回报 `true`；接收前取消或失败回报 `false`。模型在接收后失败不会撤销已确认的回执。
+
+手动压缩和分支摘要期间拒绝新输入，包括带 `deliverAs` 的输入；自动压缩属于当前请求，仍可通过 `deliverAs` 排队。异步输入钩子返回后会重新检查手动压缩状态，避免并发输入丢失。
 
 When not streaming, the message is sent immediately and triggers a new turn. When streaming without `deliverAs`, the returned promise rejects.
 The returned promise resolves after the message has been queued, or after the triggered turn completes when the agent was idle. Await it from lifecycle handlers when subsequent control flow depends on the message being queued before that lifecycle event finishes.
+
+Promise 正常返回也可能表示启动前已取消，不能单独据此判定输入已接收；需要可靠确认时使用 `onInputResult`。原有 Promise 完成时机不变。
 
 See [send-user-message.ts](../examples/extensions/send-user-message.ts) for a complete example.
 

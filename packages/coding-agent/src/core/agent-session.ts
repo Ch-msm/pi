@@ -65,6 +65,7 @@ import {
 	type MessageStartEvent,
 	type MessageUpdateEvent,
 	type ReplacedSessionContext,
+	type SendUserMessageOptions,
 	type SessionBeforeCompactResult,
 	type SessionBeforeTreeResult,
 	type SessionStartEvent,
@@ -234,6 +235,8 @@ export interface PromptOptions {
 	source?: InputSource;
 	/** Internal hook used by RPC mode to observe prompt preflight acceptance or rejection. */
 	preflightResult?: (success: boolean) => void;
+	/** 内部接收钩子：输入已处理、排队或作为用户消息持久化时调用。 */
+	onInputAccepted?: () => void;
 }
 
 /** Result from cycleModel() */
@@ -1226,6 +1229,12 @@ export class AgentSession {
 		return this.agent.hasQueuedMessages();
 	}
 
+	private _assertCanPrompt(): void {
+		if (this._compactionAbortController || this._branchSummaryAbortController) {
+			throw new Error("Cannot send a message during manual compaction or branch summarization.");
+		}
+	}
+
 	/**
 	 * Send a prompt to the agent.
 	 * - Handles extension commands (registered via pi.registerCommand) immediately, even during streaming
@@ -1250,10 +1259,12 @@ export class AgentSession {
 				if (handled) {
 					// Extension command executed, no prompt to send
 					preflightResult?.(true);
+					options?.onInputAccepted?.();
 					return;
 				}
 			}
 
+			this._assertCanPrompt();
 			// Emit input event for extension interception (before skill/template expansion)
 			if (this._extensionRunner.hasHandlers("input")) {
 				const inputResult = await this._extensionRunner.emitInput(
@@ -1264,6 +1275,7 @@ export class AgentSession {
 				);
 				if (inputResult.action === "handled") {
 					preflightResult?.(true);
+					options?.onInputAccepted?.();
 					return;
 				}
 				if (inputResult.action === "transform") {
@@ -1272,6 +1284,8 @@ export class AgentSession {
 				}
 			}
 
+			// input 钩子可能异步等待；返回后必须重新检查是否已开始手动压缩。
+			this._assertCanPrompt();
 			// Expand inline skills ($name) and prompt templates
 			expandedText = currentText;
 			if (expandPromptTemplates) {
@@ -1292,6 +1306,7 @@ export class AgentSession {
 					await this._queueSteer(expandedText, currentImages);
 				}
 				preflightResult?.(true);
+				options?.onInputAccepted?.();
 				return;
 			}
 		} catch (error) {
@@ -1301,6 +1316,7 @@ export class AgentSession {
 
 		await this._runAgentRequest(async () => {
 			const messages: AgentMessage[] = [];
+			let userMessage: AgentMessage | undefined;
 			let pendingNextTurnCount = 0;
 			try {
 				// Flush any pending bash messages before the new prompt
@@ -1346,11 +1362,12 @@ export class AgentSession {
 				if (currentImages) {
 					userContent.push(...currentImages);
 				}
-				messages.push({
+				userMessage = {
 					role: "user",
 					content: userContent,
 					timestamp: Date.now(),
-				});
+				};
+				messages.push(userMessage);
 
 				// Inject any pending "nextTurn" messages as context alongside the user message
 				pendingNextTurnCount = this._pendingNextTurnMessages.length;
@@ -1397,7 +1414,18 @@ export class AgentSession {
 			preflightResult?.(true);
 			if (this._activeRequest?.aborted) return;
 			this._pendingNextTurnMessages.splice(0, pendingNextTurnCount);
-			await this._runAgentPrompt(messages);
+			const onAccepted = options?.onInputAccepted;
+			// 会话持久化订阅先完成 message_end，再确认本次创建的确切用户消息。
+			const unsubscribe =
+				onAccepted &&
+				this.agent.subscribe((event) => {
+					if (event.type === "message_end" && event.message === userMessage) onAccepted();
+				});
+			try {
+				await this._runAgentPrompt(messages);
+			} finally {
+				unsubscribe?.();
+			}
 		});
 	}
 
@@ -1647,49 +1675,63 @@ export class AgentSession {
 	 */
 	async sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: SendUserMessageOptions,
 	): Promise<void> {
-		// Normalize content to text string + optional images
-		let text: string;
-		let images: ImageContent[] | undefined;
+		let reported = false;
+		const reportInput = (accepted: boolean) => {
+			if (reported) return;
+			reported = true;
+			options?.onInputResult?.(accepted);
+		};
+		try {
+			this._assertCanPrompt();
+			// Normalize content to text string + optional images
+			let text: string;
+			let images: ImageContent[] | undefined;
 
-		if (typeof content === "string") {
-			text = content;
-		} else {
-			const textParts: string[] = [];
-			images = [];
-			for (const part of content) {
-				if (part.type === "text") {
-					textParts.push(part.text);
-				} else {
-					images.push(part);
-				}
-			}
-			text = textParts.join("\n");
-			if (images.length === 0) images = undefined;
-		}
-
-		if (
-			this.isProcessing &&
-			options?.deliverAs &&
-			text.startsWith("/") &&
-			this._extensionRunner.getCommand(this._extractSlashCommandName(text))
-		) {
-			if (options.deliverAs === "followUp") {
-				await this._queueFollowUp(text, images);
+			if (typeof content === "string") {
+				text = content;
 			} else {
-				await this._queueSteer(text, images);
+				const textParts: string[] = [];
+				images = [];
+				for (const part of content) {
+					if (part.type === "text") {
+						textParts.push(part.text);
+					} else {
+						images.push(part);
+					}
+				}
+				text = textParts.join("\n");
+				if (images.length === 0) images = undefined;
 			}
-			return;
-		}
 
-		// Use prompt() with expandPromptTemplates: false to skip command handling and template expansion
-		await this.prompt(text, {
-			expandPromptTemplates: false,
-			streamingBehavior: options?.deliverAs,
-			images,
-			source: "extension",
-		});
+			if (
+				this.isProcessing &&
+				options?.deliverAs &&
+				text.startsWith("/") &&
+				this._extensionRunner.getCommand(this._extractSlashCommandName(text))
+			) {
+				if (options.deliverAs === "followUp") {
+					await this._queueFollowUp(text, images);
+				} else {
+					await this._queueSteer(text, images);
+				}
+				reportInput(true);
+				return;
+			}
+
+			// Use prompt() with expandPromptTemplates: false to skip command handling and template expansion
+			await this.prompt(text, {
+				expandPromptTemplates: false,
+				streamingBehavior: options?.deliverAs,
+				images,
+				source: "extension",
+				onInputAccepted: options?.onInputResult ? () => reportInput(true) : undefined,
+			});
+		} finally {
+			// 正常返回也可能表示启动前取消，不能据此伪造成功接收。
+			reportInput(false);
+		}
 	}
 
 	/**
@@ -1731,10 +1773,13 @@ export class AgentSession {
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
-		if (this._activeRequest) {
-			this._activeRequest.aborted = true;
-			this._autoCompactionAbortController?.abort();
-		}
+		this.abortCompaction();
+		this.abortBranchSummary();
+		await this._abortAgentRequest();
+	}
+
+	private async _abortAgentRequest(): Promise<void> {
+		if (this._activeRequest) this._activeRequest.aborted = true;
 		this.abortRetry();
 		this.agent.abort();
 		await this.agent.waitForIdle();
@@ -1968,12 +2013,15 @@ export class AgentSession {
 	 * @param modelOverride 仅本次手动压缩使用的模型，不修改会话模型或默认配置
 	 */
 	async compact(customInstructions?: string, modelOverride?: Model<Api>): Promise<CompactionResult> {
-		this._disconnectFromAgent();
-		await this.abort();
+		if (this.isCompacting) throw new Error("Compaction or branch summarization is already running.");
+		// 在首次异步等待前占用压缩状态，阻止并发输入和重复压缩。
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
 
 		try {
+			await this._abortAgentRequest();
+			if (this._compactionAbortController.signal.aborted) throw new Error("Compaction cancelled");
+			this._disconnectFromAgent();
 			const compactModel = modelOverride ?? this.compactionModel;
 			if (!compactModel) {
 				throw new Error(formatNoModelSelectedMessage());
@@ -2580,14 +2628,11 @@ export class AgentSession {
 			},
 			{
 				getModel: () => this.model,
-				isIdle: () => !this.isProcessing,
+				isIdle: () => !this.isProcessing && !this.isCompacting,
 				getSignal: () => this.agent.signal,
 				abort: () => {
-					if (this._extensionAbortHandler) {
-						this._extensionAbortHandler();
-						return;
-					}
 					void this.abort();
+					this._extensionAbortHandler?.();
 				},
 				hasPendingMessages: () => this.pendingMessageCount > 0,
 				shutdown: () => {

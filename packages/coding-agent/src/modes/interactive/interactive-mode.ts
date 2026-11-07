@@ -1699,9 +1699,10 @@ export class InteractiveMode {
 			setThinkingLevel: (level) => {
 				this.session.setThinkingLevel(level);
 			},
-			isIdle: () => !this.session.isProcessing,
+			isIdle: () => !this.session.isProcessing && !this.session.isCompacting,
 			signal: this.session.agent.signal,
 			abort: () => {
+				void this.session.abort();
 				this.restoreQueuedMessagesToEditor({ abort: true });
 			},
 			hasPendingMessages: () => this.session.pendingMessageCount > 0,

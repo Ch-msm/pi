@@ -706,6 +706,10 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.newSessionHandler(normalizeNewSessionOptions(options));
 			},
+			switchSession: (sessionPath, options) => {
+				runner.assertActive();
+				return runner.switchSessionHandler(sessionPath, options);
+			},
 		};
 	}
 

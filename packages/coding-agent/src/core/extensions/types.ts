@@ -341,6 +341,17 @@ export interface ExtensionContext {
 	 * session-switch handler rejected the switch.
 	 */
 	newSession(prompt?: string): Promise<{ cancelled: boolean }>;
+	/**
+	 * Switch to a different session file.
+	 *
+	 * Returns `{ cancelled: true }` when a `session_before_switch` handler rejects
+	 * the switch. Callers must ensure the current session is idle before switching;
+	 * the old extension context becomes stale after a successful switch.
+	 */
+	switchSession(
+		sessionPath: string,
+		options?: { withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
+	): Promise<{ cancelled: boolean }>;
 }
 
 /**

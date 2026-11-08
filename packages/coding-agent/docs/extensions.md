@@ -1117,7 +1117,15 @@ Options:
 
 ### ctx.switchSession(sessionPath, options?)
 
-Switch to a different session file:
+Switch to a different session file. This method is available on both the command
+context and the base `ExtensionContext`; non-command callers must ensure the
+current session is idle before switching.
+
+```typescript
+const result = await ctx.switchSession("/path/to/session.jsonl");
+```
+
+The command context also accepts:
 
 ```typescript
 const result = await ctx.switchSession("/path/to/session.jsonl", {
@@ -1145,7 +1153,7 @@ pi.registerCommand("switch", {
     if (sessions.length === 0) return;
     const choice = await ctx.ui.select(
       "Pick session:",
-      sessions.map(s => s.file),
+      sessions.map(s => s.path),
     );
     if (choice) {
       await ctx.switchSession(choice, {

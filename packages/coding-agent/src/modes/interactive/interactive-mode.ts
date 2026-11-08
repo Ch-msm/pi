@@ -1730,6 +1730,11 @@ export class InteractiveMode {
 				}
 				return result;
 			},
+			switchSession: async (sessionPath, options) => {
+				const result = await this.handleResumeSession(sessionPath, options);
+				if (!result.cancelled) this.ui.requestRender();
+				return result;
+			},
 		});
 
 		// Set up the extension shortcut handler on the default editor

@@ -23,6 +23,7 @@ function createContext(tokens: number | null, compact = vi.fn()): ExtensionConte
 		compact,
 		getSystemPrompt: () => "",
 		newSession: vi.fn(async () => ({ cancelled: false })),
+		switchSession: vi.fn(async () => ({ cancelled: false })),
 	};
 }
 

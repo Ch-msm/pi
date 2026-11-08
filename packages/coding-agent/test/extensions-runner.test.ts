@@ -493,6 +493,24 @@ describe("ExtensionRunner", () => {
 			expect(ctx.signal?.aborted).toBe(true);
 		});
 
+		it("exposes session switching from the public context", async () => {
+			const runtime = createExtensionRuntime();
+			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
+			const switchSession = vi.fn(async () => ({ cancelled: false }));
+
+			runner.bindCommandContext({
+				waitForIdle: async () => {},
+				newSession: async () => ({ cancelled: false }),
+				fork: async () => ({ cancelled: false }),
+				navigateTree: async () => ({ cancelled: false }),
+				switchSession,
+				reload: async () => {},
+			});
+
+			await runner.createContext().switchSession("/tmp/other-session.jsonl");
+			expect(switchSession).toHaveBeenCalledWith("/tmp/other-session.jsonl", undefined);
+		});
+
 		it("exposes print mode and hasUI false by default", async () => {
 			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
 			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);

@@ -1449,6 +1449,8 @@ export type SendMessageHandler = <T = unknown>(
 
 export interface SendUserMessageOptions {
 	deliverAs?: "steer" | "followUp";
+	/** 同步只读验证；可在预处理后和提交前多次调用。抛错不接收、不排队、不持久化；已被扩展处理时不调用。 */
+	validateInput?: (content: readonly (Readonly<TextContent> | Readonly<ImageContent>)[]) => undefined;
 	/** 仅回报一次：已处理、排队或持久化时为 true；接收前取消或失败时为 false。 */
 	onInputResult?: (accepted: boolean) => void;
 }

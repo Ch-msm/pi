@@ -11,6 +11,9 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
+// 用 19 万 token 验证 20 万窗口的阈值行为，不依赖模型目录中可更新的上下文限制。
+const TEST_CONTEXT_WINDOW = 200_000;
+
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
 	constructor() {
 		super(
@@ -96,7 +99,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		mkdirSync(tempDir, { recursive: true });
 		vi.useFakeTimers();
 
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = { ...getModel("anthropic", "claude-sonnet-4-5")!, contextWindow: TEST_CONTEXT_WINDOW };
 		const agent = new Agent({
 			initialState: {
 				model,
@@ -152,7 +155,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 	});
 
 	it("continues the active run after prepare-next-turn compaction", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = { ...getModel("anthropic", "claude-sonnet-4-5")!, contextWindow: TEST_CONTEXT_WINDOW };
 		const responses = [createAssistantMessage("first", 190_000), createAssistantMessage("second", 1000)];
 		const seenMessageCounts: number[] = [];
 		const agent = new Agent({

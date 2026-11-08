@@ -233,6 +233,8 @@ export interface PromptOptions {
 	streamingBehavior?: "steer" | "followUp";
 	/** Source of input for extension input event handlers. Defaults to "interactive". */
 	source?: InputSource;
+	/** 排队或执行前，同步验证已完成输入钩子及模板展开的内容。 */
+	validateInput?: SendUserMessageOptions["validateInput"];
 	/** Internal hook used by RPC mode to observe prompt preflight acceptance or rejection. */
 	preflightResult?: (success: boolean) => void;
 	/** 内部接收钩子：输入已处理、排队或作为用户消息持久化时调用。 */
@@ -1237,6 +1239,18 @@ export class AgentSession {
 		return this.agent.hasQueuedMessages();
 	}
 
+	private _validateInput(
+		validate: SendUserMessageOptions["validateInput"],
+		content: readonly (TextContent | ImageContent)[],
+	): void {
+		const result: unknown = validate?.(content);
+		if (result !== undefined) {
+			// 异步或其他返回值本身已违反接口并明确拒绝；观察其拒绝，避免额外的未处理异常。
+			void Promise.resolve(result).catch(() => {});
+			throw new TypeError("validateInput must be synchronous and return undefined.");
+		}
+	}
+
 	private _assertCanPrompt(): void {
 		if (this._disposed) throw new Error("Agent session is disposed.");
 		if (this._compactionAbortController || this._branchSummaryAbortController) {
@@ -1310,6 +1324,13 @@ export class AgentSession {
 			if (expandPromptTemplates) {
 				expandedText = this._expandInlineSkills(expandedText);
 				expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
+			}
+
+			this._validateInput(options?.validateInput, [{ type: "text", text: expandedText }, ...(currentImages ?? [])]);
+			this._assertCanPrompt();
+			if (inputController.signal.aborted) {
+				preflightResult?.(false);
+				return;
 			}
 
 			// 重试和压缩等待仍属于原请求，新消息必须继续排队。
@@ -1423,6 +1444,8 @@ export class AgentSession {
 					// Ensure we're using the base prompt (in case previous turn had modifications)
 					this.agent.state.systemPrompt = this._baseSystemPrompt;
 				}
+				// before_agent_start 可调整图片；持久化前再次验证实际待提交内容。
+				this._validateInput(options?.validateInput, userContent);
 			} catch (error) {
 				preflightResult?.(false);
 				throw error;
@@ -1732,6 +1755,8 @@ export class AgentSession {
 				text.startsWith("/") &&
 				this._extensionRunner.getCommand(this._extractSlashCommandName(text))
 			) {
+				this._validateInput(options.validateInput, [{ type: "text", text }, ...(images ?? [])]);
+				this._assertCanPrompt();
 				if (options.deliverAs === "followUp") {
 					await this._queueFollowUp(text, images);
 				} else {
@@ -1747,6 +1772,7 @@ export class AgentSession {
 				streamingBehavior: options?.deliverAs,
 				images,
 				source: "extension",
+				validateInput: options?.validateInput,
 				onInputAccepted: options?.onInputResult ? () => reportInput(true) : undefined,
 			});
 		} finally {

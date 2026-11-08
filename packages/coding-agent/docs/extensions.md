@@ -1360,6 +1360,7 @@ pi.sendUserMessage("And then summarize", { deliverAs: "followUp" });
 - `deliverAs` - Required when agent is streaming:
   - `"steer"` - Queues the message for delivery after the current assistant turn finishes executing its tool calls
   - `"followUp"` - Waits for agent to finish all tools
+- `validateInput(content)` - 可选的同步、只读验证函数，接收预处理后的文字和图片数组，正常返回 `undefined`。异步或其他返回值直接拒绝，不会被当作验证成功。输入钩子的转换及模板展开完成后、排队或执行之前调用；直接执行时，在 `before_agent_start` 完成后、提交用户消息之前再次调用，因此必须无副作用。抛出的错误原样拒绝输入，不排队、不写入用户消息，`onInputResult` 回报 `false`。被输入钩子直接处理的输入不调用；忙碌时排队的扩展命令按原始命令内容验证，不提前执行命令。
 - `onInputResult(accepted)` - 输入接收回执，仅调用一次。被扩展正式处理、成功排队或用户消息持久化后回报 `true`；接收前取消或失败回报 `false`。模型在接收后失败不会撤销已确认的回执。
 
 手动压缩和分支摘要期间拒绝新输入，包括带 `deliverAs` 的输入；自动压缩属于当前请求，仍可通过 `deliverAs` 排队。异步输入钩子返回后会重新检查手动压缩状态，避免并发输入丢失。

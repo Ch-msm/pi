@@ -43,6 +43,21 @@ interface NvidiaNimModelListItem {
 	id: string;
 }
 
+interface OpenRouterModel {
+	id: string;
+	name: string;
+	supported_parameters?: string[];
+	architecture?: { modality?: string };
+	pricing?: {
+		prompt?: string;
+		completion?: string;
+		input_cache_read?: string;
+		input_cache_write?: string;
+	};
+	context_length?: number;
+	top_provider?: { max_completion_tokens?: number };
+}
+
 interface AiGatewayModel {
 	id: string;
 	name?: string;
@@ -381,7 +396,7 @@ async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 	try {
 		console.log("Fetching models from OpenRouter API...");
 		const response = await fetch("https://openrouter.ai/api/v1/models");
-		const data = await response.json();
+		const data = (await response.json()) as { data: OpenRouterModel[] };
 
 		const models: Model<any>[] = [];
 
@@ -439,7 +454,7 @@ async function fetchAiGatewayModels(): Promise<Model<any>[]> {
 	try {
 		console.log("Fetching models from Vercel AI Gateway API...");
 		const response = await fetch(`${AI_GATEWAY_MODELS_URL}/models`);
-		const data = await response.json();
+		const data = (await response.json()) as { data?: AiGatewayModel[] };
 		const models: Model<any>[] = [];
 
 		const toNumber = (value: string | number | undefined): number => {
@@ -497,7 +512,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 	try {
 		console.log("Fetching models from models.dev API...");
 		const response = await fetch("https://models.dev/api.json");
-		const data = await response.json();
+		const data = (await response.json()) as Record<string, { models?: Record<string, ModelsDevModel> }>;
 
 		const models: Model<any>[] = [];
 		const nvidiaNimModelIds = data.nvidia?.models ? await fetchNvidiaNimModelIds() : new Map<string, string>();
@@ -987,9 +1002,10 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		] as const;
 
 		for (const variant of opencodeVariants) {
-			if (!data[variant.key]?.models) continue;
+			const providerModels = data[variant.key]?.models;
+			if (!providerModels) continue;
 
-			for (const [modelId, model] of Object.entries(data[variant.key].models)) {
+			for (const [modelId, model] of Object.entries(providerModels)) {
 				const m = model as ModelsDevModel & { status?: string };
 				if (m.tool_call !== true) continue;
 				if (m.status === "deprecated") continue;
@@ -1019,14 +1035,16 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					baseUrl = `${variant.basePath}/v1`;
 				}
 
-				if (variant.provider === "opencode" && modelId === "grok-build-0.1") {
-					compat = { ...(compat ?? {}), supportsReasoningEffort: false };
-				}
+				// 这些兼容字段只属于 Chat Completions，不能混入上游声明的其他协议。
+				if (api === "openai-completions") {
+					if (variant.provider === "opencode" && modelId === "grok-build-0.1") {
+						compat = { ...(compat ?? {}), supportsReasoningEffort: false };
+					}
 
-				if ((variant.provider === "opencode" || variant.provider === "opencode-go") && modelId === "kimi-k2.6") {
-					// OpenCode Kimi K2.6 accepts Anthropic-style thinking objects
-					// and rejects string thinking values or combined reasoning_effort.
-					compat = { ...(compat ?? {}), thinkingFormat: "deepseek", supportsReasoningEffort: false };
+					if (modelId === "kimi-k2.6") {
+						// OpenCode Kimi 接受 Anthropic 风格的 thinking 对象，拒绝字符串和 reasoning_effort。
+						compat = { ...(compat ?? {}), thinkingFormat: "deepseek", supportsReasoningEffort: false };
+					}
 				}
 
 				// Fix known mismatches between models.dev npm data and actual

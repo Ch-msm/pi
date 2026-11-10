@@ -26,6 +26,7 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "./messages.ts";
+import { withSessionFileLock } from "./session-file-lock.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -435,7 +436,7 @@ export function buildSessionContext(
  * Compute the default session directory for a cwd.
  * Encodes cwd into a safe directory name under ~/.pi/agent/sessions/.
  */
-function getDefaultSessionDirPath(cwd: string, agentDir: string = getDefaultAgentDir()): string {
+export function getDefaultSessionDirPath(cwd: string, agentDir: string = getDefaultAgentDir()): string {
 	const resolvedCwd = resolvePath(cwd);
 	const resolvedAgentDir = resolvePath(agentDir);
 	const safePath = `--${resolvedCwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
@@ -773,6 +774,7 @@ export class SessionManager {
 		sessionFile: string | undefined,
 		persist: boolean,
 		newSessionOptions?: NewSessionOptions,
+		loadedEntries?: FileEntry[],
 	) {
 		this.cwd = resolvePath(cwd);
 		this.sessionDir = normalizePath(sessionDir);
@@ -782,7 +784,7 @@ export class SessionManager {
 		}
 
 		if (sessionFile) {
-			this.setSessionFile(sessionFile);
+			this._setSessionFile(sessionFile, loadedEntries);
 		} else {
 			this.newSession(newSessionOptions);
 		}
@@ -790,35 +792,42 @@ export class SessionManager {
 
 	/** Switch to a different session file (used for resume and branching) */
 	setSessionFile(sessionFile: string): void {
-		this.sessionFile = resolvePath(sessionFile);
-		if (existsSync(this.sessionFile)) {
-			this.fileEntries = loadEntriesFromFile(this.sessionFile);
+		this._setSessionFile(sessionFile);
+	}
 
-			// If file was empty or corrupted (no valid header), truncate and start fresh
-			// to avoid appending messages without a session header (which breaks the session)
-			if (this.fileEntries.length === 0) {
+	private _setSessionFile(sessionFile: string, loadedEntries?: FileEntry[]): void {
+		withSessionFileLock(sessionFile, () => {
+			this.sessionFile = resolvePath(sessionFile);
+			if (existsSync(this.sessionFile)) {
+				// open 已解析的同一次读取结果直接用于初始化；其他入口仍读取当前文件。
+				this.fileEntries = loadedEntries ?? loadEntriesFromFile(this.sessionFile);
+
+				// If file was empty or corrupted (no valid header), truncate and start fresh
+				// to avoid appending messages without a session header (which breaks the session)
+				if (this.fileEntries.length === 0) {
+					const explicitPath = this.sessionFile;
+					this.newSession();
+					this.sessionFile = explicitPath;
+					this._rewriteFile();
+					this.flushed = true;
+					return;
+				}
+
+				const header = this.fileEntries.find((e) => e.type === "session") as SessionHeader | undefined;
+				this.sessionId = header?.id ?? createSessionId();
+
+				if (migrateToCurrentVersion(this.fileEntries)) {
+					this._rewriteFile();
+				}
+
+				this._buildIndex();
+				this.flushed = true;
+			} else {
 				const explicitPath = this.sessionFile;
 				this.newSession();
-				this.sessionFile = explicitPath;
-				this._rewriteFile();
-				this.flushed = true;
-				return;
+				this.sessionFile = explicitPath; // preserve explicit path from --session flag
 			}
-
-			const header = this.fileEntries.find((e) => e.type === "session") as SessionHeader | undefined;
-			this.sessionId = header?.id ?? createSessionId();
-
-			if (migrateToCurrentVersion(this.fileEntries)) {
-				this._rewriteFile();
-			}
-
-			this._buildIndex();
-			this.flushed = true;
-		} else {
-			const explicitPath = this.sessionFile;
-			this.newSession();
-			this.sessionFile = explicitPath; // preserve explicit path from --session flag
-		}
+		});
 	}
 
 	newSession(options?: NewSessionOptions): string | undefined {
@@ -1395,13 +1404,15 @@ export class SessionManager {
 	 */
 	static open(path: string, sessionDir?: string, cwdOverride?: string): SessionManager {
 		const resolvedPath = resolvePath(path);
-		// Extract cwd from session header if possible, otherwise use process.cwd()
-		const entries = loadEntriesFromFile(resolvedPath);
-		const header = entries.find((e) => e.type === "session") as SessionHeader | undefined;
-		const cwd = cwdOverride ?? header?.cwd ?? process.cwd();
-		// If no sessionDir provided, derive from file's parent directory
-		const dir = sessionDir ? normalizePath(sessionDir) : resolve(resolvedPath, "..");
-		return new SessionManager(cwd, dir, resolvedPath, true);
+		return withSessionFileLock(resolvedPath, () => {
+			// 在读取之前持锁，保证迁移使用的快照不会被另一个执行者改写。
+			const entries = loadEntriesFromFile(resolvedPath);
+			const header = entries.find((e) => e.type === "session") as SessionHeader | undefined;
+			const cwd = cwdOverride ?? header?.cwd ?? process.cwd();
+			// If no sessionDir provided, derive from file's parent directory
+			const dir = sessionDir ? normalizePath(sessionDir) : resolve(resolvedPath, "..");
+			return new SessionManager(cwd, dir, resolvedPath, true, undefined, entries);
+		});
 	}
 
 	/**

@@ -192,6 +192,14 @@ export {
 	createWriteTool,
 	type PromptTemplate,
 } from "./core/sdk.ts";
+export { openSessionForExecution, publishSessionExecution, releaseSessionExecution } from "./core/session-execution.ts";
+export {
+	createSessionHistory,
+	readSessionHeader,
+	readSessionHistory,
+	type SessionHistoryOptions,
+	type SessionHistoryPage,
+} from "./core/session-history.ts";
 export {
 	type BranchSummaryEntry,
 	buildSessionContext,

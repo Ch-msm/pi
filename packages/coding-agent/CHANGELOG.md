@@ -4,6 +4,9 @@
 
 ### Added
 
+- 新增只读历史字节索引分页与正式会话头接口，以及显式原子新建历史接口；浏览历史不创建 Agent 或迁移源文件。
+- SDK 和 CLI 执行入口增加跨进程单写入锁及私有执行归属发布接口，阻止同一历史被多个 Pi 同时执行；异常退出遗留锁不按超时抢占。
+
 - Added project trust gating for project-local settings, resources, instructions, and packages ([#5332](https://github.com/earendil-works/pi/pull/5332)).
 - Added the latest prompt cache hit rate to the interactive footer.
 - Exported RPC extension UI request and response types from the public API ([#5455](https://github.com/earendil-works/pi/issues/5455)).
@@ -14,6 +17,7 @@
 
 ### Fixed
 
+- 修复打开历史会话时重复读取和解析整个 JSONL 文件的问题，同次读取结果直接用于初始化，保留迁移、损坏文件处理和 cwd 覆盖语义。
 - Fixed finalized assistant messages to remove stale streaming tool components that have no corresponding final tool call.
 - Fixed invalid `models.json` syntax to skip startup config migrations and report the normal file-path-aware models error instead of a raw JSON parse stack trace ([#5418](https://github.com/earendil-works/pi/issues/5418)).
 

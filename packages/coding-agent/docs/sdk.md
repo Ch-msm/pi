@@ -777,6 +777,29 @@ sm.createBranchedSession(leafId);       // Extract path to new file
 
 > See [examples/sdk/11-sessions.ts](../examples/sdk/11-sessions.ts) and [Session Format](session-format.md)
 
+### 只读历史分页与执行归属
+
+手机或其他浏览端不应为查看历史创建 Agent 或调用 `switchSession()`。使用只读接口：
+
+```typescript
+import { readSessionHistory, readSessionHeader, openSessionForExecution } from "@earendil-works/pi-coding-agent";
+
+const header = await readSessionHeader("/absolute/session.jsonl");
+const recent = await readSessionHistory("/absolute/session.jsonl", { limit: 30 });
+const older = await readSessionHistory("/absolute/session.jsonl", {
+  before: recent.start, revision: recent.revision, limit: 30,
+});
+// 确实要执行时，在迁移／构造管理器前获得单写入锁。
+const sessionManager = openSessionForExecution("/absolute/session.jsonl");
+const { session } = await createAgentSession({ sessionManager });
+try { /* 使用公开 session.prompt() 或扩展输入接口 */ }
+finally { session.dispose(); }
+```
+
+历史索引仅保存字节位置和父链，默认私有存储在 agent 缓存目录；首次或源文件变化需要重建，后续只读取该页正文。`revision` 变化报 `HISTORY_CHANGED`，正文超过字节预算报 `ENTRY_TOO_LARGE`，不会截断内容。`createSessionHistory(cwd, id, sessionDir?)` 仅在用户明确新建时原子创建 SDK 会话头，相同请求标识重试不覆盖既有历史。
+
+`createAgentSession()` 与普通 CLI 持有跨进程文件锁；同一会话的第二执行者报 `SESSION_IN_USE`。正常 `dispose()` 释放锁，异常退出遗留锁不按超时抢占，必须人工核对。`publishSessionExecution(path, source, runtimeId, sessionId)` 只允许当前持锁进程发布私有归属，供受信任本机进程管理器复用已有终端实例。此机制需要重启旧 SDK 实例，不能用扩展重载补上旧进程的锁。
+
 ### Settings Management
 
 ```typescript

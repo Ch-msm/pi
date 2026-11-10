@@ -14,6 +14,7 @@ import { findExactModelReferenceMatch, findInitialModel } from "./model-resolver
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
+import { activateSessionExecution } from "./session-execution.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { time } from "./timings.ts";
@@ -164,6 +165,22 @@ function getDefaultAgentDir(): string {
  * ```
  */
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
+	const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
+	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
+	const manager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
+	const release = activateSessionExecution(manager, agentDir);
+	try {
+		return await createOwnedAgentSession({ ...options, sessionManager: manager }, release);
+	} catch (error) {
+		release();
+		throw error;
+	}
+}
+
+async function createOwnedAgentSession(
+	options: CreateAgentSessionOptions,
+	releaseExecution: () => void,
+): Promise<CreateAgentSessionResult> {
 	const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	let resourceLoader = options.resourceLoader;
@@ -390,6 +407,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		releaseExecution,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

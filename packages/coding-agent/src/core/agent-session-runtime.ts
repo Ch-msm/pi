@@ -7,6 +7,7 @@ import type { ReplacedSessionContext, SessionShutdownEvent, SessionStartEvent } 
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
+import { openSessionForExecution, releaseSessionExecution } from "./session-execution.ts";
 import { SessionManager } from "./session-manager.ts";
 
 /**
@@ -194,19 +195,37 @@ export class AgentSessionRuntime {
 		}
 
 		const previousSessionFile = this.session.sessionFile;
-		const sessionManager = SessionManager.open(sessionPath, undefined, options?.cwdOverride);
-		assertSessionCwdExists(sessionManager, this.cwd);
-		await this.teardownCurrent("resume", sessionManager.getSessionFile());
-		this.apply(
-			await this.createRuntime({
-				cwd: sessionManager.getCwd(),
-				agentDir: this.services.agentDir,
-				sessionManager,
-				sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
-			}),
+		const sessionManager = openSessionForExecution(
+			sessionPath,
+			undefined,
+			options?.cwdOverride,
+			this.session.sessionManager,
 		);
-		await this.finishSessionReplacement(options?.withSession);
-		return { cancelled: false };
+		return this.replaceSavedSession(sessionManager, previousSessionFile, options?.withSession);
+	}
+
+	private async replaceSavedSession(
+		sessionManager: SessionManager,
+		previousSessionFile?: string,
+		withSession?: (ctx: ReplacedSessionContext) => Promise<void>,
+	): Promise<{ cancelled: boolean }> {
+		try {
+			assertSessionCwdExists(sessionManager, this.cwd);
+			await this.teardownCurrent("resume", sessionManager.getSessionFile());
+			this.apply(
+				await this.createRuntime({
+					cwd: sessionManager.getCwd(),
+					agentDir: this.services.agentDir,
+					sessionManager,
+					sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
+				}),
+			);
+			await this.finishSessionReplacement(withSession);
+			return { cancelled: false };
+		} catch (error) {
+			if (this.session.sessionManager !== sessionManager) releaseSessionExecution(sessionManager);
+			throw error;
+		}
 	}
 
 	async newSession(options?: {
@@ -293,7 +312,12 @@ export class AgentSessionRuntime {
 				return { cancelled: false, selectedText };
 			}
 
-			const sessionManager = SessionManager.open(currentSessionFile, sessionDir);
+			const sessionManager = openSessionForExecution(
+				currentSessionFile,
+				sessionDir,
+				undefined,
+				this.session.sessionManager,
+			);
 			const forkedSessionPath = sessionManager.createBranchedSession(targetLeafId);
 			if (!forkedSessionPath) {
 				throw new Error("Failed to create forked session");
@@ -355,23 +379,16 @@ export class AgentSessionRuntime {
 		}
 
 		const previousSessionFile = this.session.sessionFile;
-		if (resolve(destinationPath) !== resolvedPath) {
-			copyFileSync(resolvedPath, destinationPath);
-		}
-
-		const sessionManager = SessionManager.open(destinationPath, sessionDir, cwdOverride);
-		assertSessionCwdExists(sessionManager, this.cwd);
-		await this.teardownCurrent("resume", sessionManager.getSessionFile());
-		this.apply(
-			await this.createRuntime({
-				cwd: sessionManager.getCwd(),
-				agentDir: this.services.agentDir,
-				sessionManager,
-				sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
-			}),
+		const sessionManager = openSessionForExecution(
+			destinationPath,
+			sessionDir,
+			cwdOverride,
+			this.session.sessionManager,
+			() => {
+				if (resolve(destinationPath) !== resolvedPath) copyFileSync(resolvedPath, destinationPath);
+			},
 		);
-		await this.finishSessionReplacement();
-		return { cancelled: false };
+		return this.replaceSavedSession(sessionManager, previousSessionFile);
 	}
 
 	async dispose(): Promise<void> {
@@ -399,8 +416,14 @@ export async function createAgentSessionRuntime(
 		sessionStartEvent?: SessionStartEvent;
 	},
 ): Promise<AgentSessionRuntime> {
-	assertSessionCwdExists(options.sessionManager, options.cwd);
-	const result = await createRuntime(options);
+	let result: CreateAgentSessionRuntimeResult;
+	try {
+		assertSessionCwdExists(options.sessionManager, options.cwd);
+		result = await createRuntime(options);
+	} catch (error) {
+		releaseSessionExecution(options.sessionManager);
+		throw error;
+	}
 	return new AgentSessionRuntime(
 		result.session,
 		result.services,
